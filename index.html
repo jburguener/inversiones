@@ -262,7 +262,7 @@ Fondo Renta Global;Agus&amp;Joaco;Santander Joaco;2026-02-28;25010.55;0"></texta
 
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
 const STORAGE_KEY = 'inversiones_familia_v1';
 let data = {
@@ -628,9 +628,12 @@ function renderDashboard(){
 }
 
 function drawChart(canvasId, type, chartData, dualAxis){
-  if(typeof Chart === 'undefined'){ return; }
   const ctx = document.getElementById(canvasId);
   if(!ctx) return;
+  if(typeof Chart === 'undefined'){
+    ctx.parentElement.innerHTML = '<p style="color:var(--text-muted);font-size:12px;padding:10px 0;">No se pudo cargar la librería de gráficos (revisa tu conexión y recarga la página).</p>';
+    return;
+  }
   if(charts[canvasId]) charts[canvasId].destroy();
   const opts = {
     responsive:true, maintainAspectRatio:false,
