@@ -185,7 +185,11 @@
         <div><label>Fecha del aporte inicial</label><input type="date" id="newFecha"></div>
         <div><label>Monto aportado</label><input type="number" id="newMonto" placeholder="500000"></div>
       </div>
-      <div><label>Valor cuota al aportar</label><input type="number" step="any" id="newValorCuota" placeholder="25000.32"></div>
+      <div class="field-row">
+        <div><label>Valor cuota al aportar</label><input type="number" step="any" id="newValorCuota" placeholder="25000.32"></div>
+        <div><label>Cuotas (opcional, si ya la sabes)</label><input type="number" step="any" id="newCuotas" placeholder="auto"></div>
+      </div>
+      <p style="font-size:11px;color:var(--text-muted);margin:-4px 0 0;">Completa valor cuota + monto, o valor cuota + cuotas — el tercero se calcula solo.</p>
       <div id="newFxWrap" style="display:none;"><label>Tipo de cambio al momento de invertir</label><input type="number" step="any" id="newFxRate" placeholder="950"></div>
       <div class="form-actions">
         <button type="button" class="small-btn" id="btnCancelAddInv">Cancelar</button>
@@ -274,6 +278,8 @@ let data = {
 };
 let syncConfig = { gistId: null, token: null };
 let openInvId = null;
+let editingHist = {}; // invId -> historial index currently being edited, or undefined
+let editingHeaderId = null; // invId currently showing the "editar fondo" form
 let charts = {};
 
 // ---------- persistence ----------
@@ -285,6 +291,9 @@ function load(){
       data = Object.assign(data, parsed);
     }
   }catch(e){ console.error('Error cargando datos', e); }
+  (data.investments||[]).forEach(inv=>{
+    (inv.historial||[]).forEach(h=>{ if(!h.mid) h.mid = 'm'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); });
+  });
 }
 function save(){
   try{
@@ -435,6 +444,26 @@ function fmtCLP(n){ return Math.round(n).toLocaleString('es-CL', {style:'currenc
 function fmtCuota(n){ return n.toLocaleString('es-CL', {minimumFractionDigits:2, maximumFractionDigits:4}); }
 function fmtPct(n){ if(n===null||isNaN(n)) return 'N/D'; return (n>=0?'+':'') + n.toLocaleString('es-CL',{minimumFractionDigits:1,maximumFractionDigits:1}) + '%'; }
 function uid(){ return 'i'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+
+// Given raw string inputs, fills in whichever of {monto, valorCuota, cuotas} is missing,
+// as long as at least valorCuota plus one of (monto, cuotas) is resolvable.
+// Returns {monto, valorCuota, cuotas} or null if not enough info / invalid.
+function resolveEntry(montoRaw, valorCuotaRaw, cuotasRaw){
+  const has = s => s!==undefined && s!==null && s!=='' && !isNaN(parseFloat(s));
+  let monto = has(montoRaw) ? parseFloat(montoRaw) : null;
+  let valorCuota = has(valorCuotaRaw) ? parseFloat(valorCuotaRaw) : null;
+  let cuotas = has(cuotasRaw) ? parseFloat(cuotasRaw) : null;
+
+  if(valorCuota===null){
+    if(monto!==null && cuotas!==null && cuotas>0){ valorCuota = monto/cuotas; }
+    else return null;
+  }
+  if(valorCuota<=0) return null;
+  if(monto===null && cuotas===null){ monto=0; cuotas=0; }
+  else if(monto===null){ monto = cuotas*valorCuota; }
+  else if(cuotas===null){ cuotas = monto>0 ? monto/valorCuota : 0; }
+  return {monto, valorCuota, cuotas};
+}
 function groupKey(nombre){ return nombre.trim().toLowerCase().replace(/[^a-z0-9]+/g,'-'); }
 function groupInvestmentsByFondo(){
   const groups = {};
@@ -593,7 +622,6 @@ function renderDashboard(){
   pEl.textContent = fmtPct(totals.pct); pEl.className='v '+(totals.pct>=0?'pos':'neg');
 
   const palette = ['#7FBFA0','#C9A227','#C1553B','#5B8AA6','#9B8AC4','#D98B6B'];
-  const valueLabel = dashboardFilter==='USD' ? 'Valor actual (USD)' : 'Valor actual (CLP)';
 
   // Mensual
   const serie = monthlySeries();
@@ -603,31 +631,28 @@ function renderDashboard(){
       {type:'bar', label:'Valor cartera'+labelSuffix, data: serie.map(r=>r.valor), backgroundColor:'#7FBFA0', yAxisID:'y'},
       {type:'line', label:'Rentabilidad mensual (%)', data: serie.map(r=>r.rent), borderColor:'#C9A227', backgroundColor:'#C9A227', yAxisID:'y1', tension:.3, spanGaps:true}
     ]
-  }, true);
+  }, {dualAxis:true});
 
-  // Por fondo
-  const porFondo = groupBy(inv=>inv.nombre);
-  drawChart('chartFondo', 'bar', {
-    labels: Object.keys(porFondo),
-    datasets: [{label:valueLabel, data: Object.values(porFondo).map(v=>v.actual), backgroundColor: Object.keys(porFondo).map((_,i)=>palette[i%palette.length])}]
-  });
-
-  // Por aportante
-  const porAportante = groupBy(inv=>inv.aportante);
-  drawChart('chartAportante', 'bar', {
-    labels: Object.keys(porAportante),
-    datasets: [{label:valueLabel, data: Object.values(porAportante).map(v=>v.actual), backgroundColor: Object.keys(porAportante).map((_,i)=>palette[i%palette.length])}]
-  });
-
-  // Por lugar
-  const porLugar = groupBy(inv=>inv.lugar);
-  drawChart('chartLugar', 'bar', {
-    labels: Object.keys(porLugar),
-    datasets: [{label:valueLabel, data: Object.values(porLugar).map(v=>v.actual), backgroundColor: Object.keys(porLugar).map((_,i)=>palette[i%palette.length])}]
-  });
+  // Por fondo / aportante / lugar: aportado + rentabilidad apilados
+  function stackedChart(canvasId, groups){
+    const labels = Object.keys(groups);
+    const aportados = Object.values(groups).map(v=>v.aportado);
+    const rentabilidades = Object.values(groups).map(v=>v.actual-v.aportado);
+    drawChart(canvasId, 'bar', {
+      labels,
+      datasets: [
+        {label:'Aportado', data:aportados, backgroundColor:'#5B8AA6'},
+        {label:'Rentabilidad', data:rentabilidades, backgroundColor: rentabilidades.map(r=>r>=0?'#C9A227':'#C1553B')}
+      ]
+    }, {stacked:true});
+  }
+  stackedChart('chartFondo', groupBy(inv=>inv.nombre));
+  stackedChart('chartAportante', groupBy(inv=>inv.aportante));
+  stackedChart('chartLugar', groupBy(inv=>inv.lugar));
 }
 
-function drawChart(canvasId, type, chartData, dualAxis){
+function drawChart(canvasId, type, chartData, chartOpts){
+  chartOpts = chartOpts || {};
   const ctx = document.getElementById(canvasId);
   if(!ctx) return;
   if(typeof Chart === 'undefined'){
@@ -639,11 +664,11 @@ function drawChart(canvasId, type, chartData, dualAxis){
     responsive:true, maintainAspectRatio:false,
     plugins:{ legend:{ labels:{ color:'#EDEAE0', font:{family:'Inter', size:11} } } },
     scales:{
-      x:{ ticks:{ color:'#9FB3AC', font:{size:10} }, grid:{ color:'rgba(237,234,224,0.08)' } },
-      y:{ ticks:{ color:'#9FB3AC', font:{size:10} }, grid:{ color:'rgba(237,234,224,0.08)' } }
+      x:{ stacked: !!chartOpts.stacked, ticks:{ color:'#9FB3AC', font:{size:10} }, grid:{ color:'rgba(237,234,224,0.08)' } },
+      y:{ stacked: !!chartOpts.stacked, ticks:{ color:'#9FB3AC', font:{size:10} }, grid:{ color:'rgba(237,234,224,0.08)' } }
     }
   };
-  if(dualAxis){
+  if(chartOpts.dualAxis){
     opts.scales.y = {position:'left', ticks:{color:'#9FB3AC', font:{size:10}}, grid:{color:'rgba(237,234,224,0.08)'}};
     opts.scales.y1 = {position:'right', ticks:{color:'#9FB3AC', font:{size:10}}, grid:{drawOnChartArea:false}};
   }
@@ -660,12 +685,37 @@ function renderInvList(){
     const c = computeInv(inv);
     const isOpen = openInvId===inv.id;
     const isUSD = inv.moneda==='USD';
+    const montoSym = isUSD ? 'US$' : '$';
     const rows = inv.historial.slice().reverse().map(h=>{
       const tipo = h.monto>0 ? 'Aporte' : 'Actualización';
       const montoTxt = h.monto>0 ? (' · '+ (isUSD?'US$'+h.monto.toLocaleString('es-CL'):fmtCLP(h.monto)) + (isUSD && h.fxRate ? ' · TC '+h.fxRate : '')) : '';
-      return `<div class="history-line"><span>${h.fecha} · ${tipo}</span><span>Cuota ${fmtCuota(h.valorCuota)}${montoTxt}</span></div>`;
+      return `
+      <div>
+        <div class="history-line">
+          <span>${h.fecha} · ${tipo} · ${fmtCuota(h.cuotas)} cuotas</span>
+          <span style="display:flex;align-items:center;gap:8px;">
+            Cuota ${fmtCuota(h.valorCuota)}${montoTxt}
+            <button class="small-btn" style="padding:2px 6px;font-size:11px;" data-action="editmov" data-id="${inv.id}" data-mid="${h.mid}">✎</button>
+            <button class="small-btn danger" style="padding:2px 6px;font-size:11px;" data-action="deletemov" data-id="${inv.id}" data-mid="${h.mid}">🗑</button>
+          </span>
+        </div>
+        <form class="inline-form" id="editMovForm-${h.mid}">
+          <div class="field-row">
+            <div><label>Fecha</label><input type="date" id="editMovFecha-${h.mid}" value="${h.fecha}"></div>
+            <div><label>Valor cuota</label><input type="number" step="any" id="editMovVC-${h.mid}" value="${h.valorCuota}"></div>
+          </div>
+          <div class="field-row">
+            <div><label>Monto aportado</label><input type="number" id="editMovMonto-${h.mid}" value="${h.monto}"></div>
+            <div><label>Cuotas</label><input type="number" step="any" id="editMovCuotas-${h.mid}" value="${h.cuotas}"></div>
+          </div>
+          ${isUSD ? `<div><label>Tipo de cambio</label><input type="number" step="any" id="editMovFx-${h.mid}" value="${h.fxRate||data.fxRate}"></div>` : ''}
+          <div class="form-actions">
+            <button type="button" class="small-btn" data-action="canceleditmov" data-mid="${h.mid}">Cancelar</button>
+            <button type="button" class="add-btn" data-action="saveeditmov" data-id="${inv.id}" data-mid="${h.mid}">Guardar cambios</button>
+          </div>
+        </form>
+      </div>`;
     }).join('');
-    const montoSym = isUSD ? 'US$' : '$';
     return `
     <div class="inv-card">
       <div class="inv-top" data-toggle="${inv.id}">
@@ -686,14 +736,33 @@ function renderInvList(){
         </div>
         <div class="inv-actions">
           <button class="small-btn" data-action="addmov" data-id="${inv.id}">+ Registrar movimiento</button>
+          <button class="small-btn" data-action="editfund" data-id="${inv.id}">Editar datos del fondo</button>
           <button class="small-btn danger" data-action="delete" data-id="${inv.id}">Eliminar</button>
         </div>
+        <form class="inline-form" id="editFundForm-${inv.id}">
+          <div class="field-row">
+            <div><label>Nombre del fondo</label><input type="text" id="editFundNombre-${inv.id}" value="${escapeHtml(inv.nombre)}"></div>
+            <div><label>Aportante</label><select id="editFundAportante-${inv.id}">${data.aportantes.map(a=>`<option value="${escapeHtml(a)}" ${a===inv.aportante?'selected':''}>${escapeHtml(a)}</option>`).join('')}</select></div>
+          </div>
+          <div class="field-row">
+            <div><label>Lugar</label><select id="editFundLugar-${inv.id}">${data.lugares.map(l=>`<option value="${escapeHtml(l)}" ${l===inv.lugar?'selected':''}>${escapeHtml(l)}</option>`).join('')}</select></div>
+            <div><label>Moneda</label><select id="editFundMoneda-${inv.id}"><option value="CLP" ${inv.moneda==='CLP'?'selected':''}>CLP</option><option value="USD" ${inv.moneda==='USD'?'selected':''}>USD</option></select></div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="small-btn" data-action="canceleditfund" data-id="${inv.id}">Cancelar</button>
+            <button type="button" class="add-btn" data-action="saveeditfund" data-id="${inv.id}">Guardar</button>
+          </div>
+        </form>
         <form class="inline-form" id="movForm-${inv.id}">
           <div class="field-row">
             <div><label>Fecha</label><input type="date" id="movFecha-${inv.id}" value="${todayStr()}"></div>
             <div><label>Valor cuota</label><input type="number" step="any" id="movValorCuota-${inv.id}" placeholder="${fmtCuota(c.valorCuotaActual)}"></div>
           </div>
-          <div><label>Monto aportado (0 si solo actualizas valor cuota)</label><input type="number" id="movMonto-${inv.id}" placeholder="0"></div>
+          <div class="field-row">
+            <div><label>Monto aportado (0 si solo actualizas valor cuota)</label><input type="number" id="movMonto-${inv.id}" placeholder="0"></div>
+            <div><label>Cuotas (opcional, si ya la sabes)</label><input type="number" step="any" id="movCuotas-${inv.id}" placeholder="auto"></div>
+          </div>
+          <p style="font-size:11px;color:var(--text-muted);margin:-4px 0 0;">Completa valor cuota + monto, o valor cuota + cuotas — el tercero se calcula solo.</p>
           ${isUSD ? `<div><label>Tipo de cambio de este aporte (vacío = usa el actual, ${data.fxRate})</label><input type="number" step="any" id="movFx-${inv.id}" placeholder="${data.fxRate}"></div>` : ''}
           <div class="form-actions">
             <button type="button" class="small-btn" data-action="cancelmov" data-id="${inv.id}">Cancelar</button>
@@ -796,7 +865,7 @@ document.getElementById('btnSaveWeekly').addEventListener('click', ()=>{
         const montoInput = document.getElementById('weeklyMonto-'+inv.id);
         const monto = parseFloat(montoInput.value) || 0;
         const cuotas = monto>0 ? monto/valorCuota : 0;
-        const entry = {fecha, valorCuota, monto, cuotas};
+        const entry = {fecha, mid:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,7), valorCuota, monto, cuotas};
         if(inv.moneda==='USD'){
           const fxInput = document.getElementById('weeklyFx-'+inv.id);
           const fx = fxInput ? parseFloat(fxInput.value) : NaN;
@@ -832,18 +901,20 @@ document.getElementById('btnSaveInv').addEventListener('click', ()=>{
   const lugar = document.getElementById('newLugar').value;
   const moneda = document.getElementById('newMoneda').value;
   const fecha = document.getElementById('newFecha').value || todayStr();
-  const monto = parseFloat(document.getElementById('newMonto').value) || 0;
-  const valorCuota = parseFloat(document.getElementById('newValorCuota').value) || 0;
-  if(!nombre || monto<=0 || valorCuota<=0){ alert('Completa nombre, monto y valor cuota.'); return; }
-  const cuotas = monto/valorCuota;
-  const entry = {fecha, valorCuota, monto, cuotas};
+  const resolved = resolveEntry(
+    document.getElementById('newMonto').value,
+    document.getElementById('newValorCuota').value,
+    document.getElementById('newCuotas').value
+  );
+  if(!nombre || !resolved || resolved.monto<=0){ alert('Completa el nombre, el valor cuota, y el monto o las cuotas.'); return; }
+  const entry = { fecha, mid:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,7), ...resolved };
   if(moneda==='USD'){
     const fx = parseFloat(document.getElementById('newFxRate').value);
     entry.fxRate = fx>0 ? fx : data.fxRate;
   }
   data.investments.push({ id:uid(), nombre, aportante, lugar, moneda, historial:[entry] });
   save();
-  ['newNombre','newMonto','newValorCuota','newFxRate'].forEach(id=>document.getElementById(id).value='');
+  ['newNombre','newMonto','newValorCuota','newCuotas','newFxRate'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('formAddInv').classList.remove('open');
   renderAll();
 });
@@ -854,17 +925,22 @@ document.getElementById('invList').addEventListener('click', (e)=>{
   if(toggle){ const id=toggle.getAttribute('data-toggle'); openInvId = openInvId===id?null:id; renderInvList(); return; }
   const btn = e.target.closest('[data-action]');
   if(!btn) return;
-  const action = btn.getAttribute('data-action'); const id = btn.getAttribute('data-id');
+  const action = btn.getAttribute('data-action');
+  const id = btn.getAttribute('data-id');
+  const mid = btn.getAttribute('data-mid');
+
   if(action==='addmov'){ document.getElementById('movForm-'+id).classList.add('open'); }
   else if(action==='cancelmov'){ document.getElementById('movForm-'+id).classList.remove('open'); }
   else if(action==='savemov'){
     const fecha = document.getElementById('movFecha-'+id).value || todayStr();
-    const valorCuota = parseFloat(document.getElementById('movValorCuota-'+id).value);
-    const monto = parseFloat(document.getElementById('movMonto-'+id).value) || 0;
-    if(!valorCuota || valorCuota<=0){ alert('Ingresa un valor cuota válido.'); return; }
     const inv = data.investments.find(i=>i.id===id);
-    const cuotas = monto>0 ? monto/valorCuota : 0;
-    const entry = {fecha, valorCuota, monto, cuotas};
+    const resolved = resolveEntry(
+      document.getElementById('movMonto-'+id).value,
+      document.getElementById('movValorCuota-'+id).value,
+      document.getElementById('movCuotas-'+id).value
+    );
+    if(!resolved){ alert('Ingresa al menos el valor cuota, y el monto o la cantidad de cuotas.'); return; }
+    const entry = {fecha, mid:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,7), ...resolved};
     if(inv.moneda==='USD'){
       const fxInput = document.getElementById('movFx-'+id);
       const fx = fxInput ? parseFloat(fxInput.value) : NaN;
@@ -878,6 +954,47 @@ document.getElementById('invList').addEventListener('click', (e)=>{
       data.investments = data.investments.filter(i=>i.id!==id);
       save(); renderAll();
     }
+  } else if(action==='editfund'){
+    document.getElementById('editFundForm-'+id).classList.add('open');
+  } else if(action==='canceleditfund'){
+    document.getElementById('editFundForm-'+id).classList.remove('open');
+  } else if(action==='saveeditfund'){
+    const inv = data.investments.find(i=>i.id===id);
+    const nombre = document.getElementById('editFundNombre-'+id).value.trim();
+    if(!nombre){ alert('El nombre no puede quedar vacío.'); return; }
+    inv.nombre = nombre;
+    inv.aportante = document.getElementById('editFundAportante-'+id).value;
+    inv.lugar = document.getElementById('editFundLugar-'+id).value;
+    inv.moneda = document.getElementById('editFundMoneda-'+id).value;
+    save(); renderAll();
+  } else if(action==='editmov'){
+    document.getElementById('editMovForm-'+mid).classList.add('open');
+  } else if(action==='canceleditmov'){
+    document.getElementById('editMovForm-'+mid).classList.remove('open');
+  } else if(action==='deletemov'){
+    if(confirm('¿Eliminar este movimiento del historial?')){
+      const inv = data.investments.find(i=>i.id===id);
+      inv.historial = inv.historial.filter(h=>h.mid!==mid);
+      save(); renderAll();
+    }
+  } else if(action==='saveeditmov'){
+    const inv = data.investments.find(i=>i.id===id);
+    const h = inv.historial.find(x=>x.mid===mid);
+    const fecha = document.getElementById('editMovFecha-'+mid).value || h.fecha;
+    const resolved = resolveEntry(
+      document.getElementById('editMovMonto-'+mid).value,
+      document.getElementById('editMovVC-'+mid).value,
+      document.getElementById('editMovCuotas-'+mid).value
+    );
+    if(!resolved){ alert('Datos inválidos: revisa valor cuota, monto y cuotas.'); return; }
+    h.fecha = fecha; h.monto = resolved.monto; h.valorCuota = resolved.valorCuota; h.cuotas = resolved.cuotas;
+    if(inv.moneda==='USD'){
+      const fxInput = document.getElementById('editMovFx-'+mid);
+      const fx = fxInput ? parseFloat(fxInput.value) : NaN;
+      h.fxRate = fx>0 ? fx : data.fxRate;
+    }
+    inv.historial.sort((a,b)=>a.fecha.localeCompare(b.fecha));
+    save(); renderAll();
   }
 });
 
@@ -933,7 +1050,7 @@ document.getElementById('btnProcesarBulk').addEventListener('click', ()=>{
       return;
     }
     const cuotas = monto>0 ? monto/valorCuota : 0;
-    const entry = {fecha, valorCuota, monto, cuotas};
+    const entry = {fecha, mid:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,7), valorCuota, monto, cuotas};
     if(inv.moneda==='USD'){ entry.fxRate = fxRate>0 ? fxRate : data.fxRate; }
     inv.historial.push(entry);
     okCount++;
