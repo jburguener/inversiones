@@ -152,16 +152,6 @@
     </div>
 
     <div class="section">
-      <h2>Valor de la cartera por mes</h2>
-      <div class="chart-wrap"><canvas id="chartMensualValor"></canvas></div>
-    </div>
-
-    <div class="section">
-      <h2>Rentabilidad mensual</h2>
-      <div class="chart-wrap"><canvas id="chartMensualRent"></canvas></div>
-    </div>
-
-    <div class="section">
       <h2>Aportes: mejor y peor rentabilidad</h2>
       <div class="ranking-grid">
         <div>
@@ -554,57 +544,6 @@ function groupBy(keyFn, filterMoneda){
   return map;
 }
 
-function monthsRange(){
-  let minDate=null;
-  data.investments.forEach(inv=>inv.historial.forEach(h=>{ if(!minDate||h.fecha<minDate) minDate=h.fecha; }));
-  if(!minDate) return [];
-  const start=new Date(minDate+'T00:00:00'); const now=new Date();
-  const months=[]; let y=start.getFullYear(), m=start.getMonth();
-  const endY=now.getFullYear(), endM=now.getMonth();
-  while(y<endY || (y===endY && m<=endM)){
-    months.push(`${y}-${String(m+1).padStart(2,'0')}`);
-    m++; if(m>11){m=0;y++;}
-  }
-  return months;
-}
-
-function valueAtMonthEnd(inv, ym){
-  const [y,m] = ym.split('-').map(Number);
-  const endStr = new Date(y,m,0).toISOString().slice(0,10);
-  let cuotasAcum=0, aportesAcumNative=0, lastValorCuota=null;
-  inv.historial.forEach(h=>{
-    if(h.fecha<=endStr){ cuotasAcum+=h.cuotas; aportesAcumNative+=h.monto; lastValorCuota=h.valorCuota; }
-  });
-  if(lastValorCuota===null) return null;
-  const valorNative = cuotasAcum*lastValorCuota;
-  if(dashboardFilter==='todas'){
-    return { valor: toCLP(valorNative, inv.moneda), aportes: toCLP(aportesAcumNative, inv.moneda) };
-  }
-  return { valor: valorNative, aportes: aportesAcumNative };
-}
-
-function monthlySeries(){
-  const months = monthsRange();
-  const invs = data.investments.filter(inv => dashboardFilter==='todas' || inv.moneda===dashboardFilter);
-  const rows = months.map(ym=>{
-    let valor=0, aportes=0;
-    invs.forEach(inv=>{
-      const v = valueAtMonthEnd(inv, ym);
-      if(v){ valor+=v.valor; aportes+=v.aportes; }
-    });
-    return {ym, valor, aportes};
-  });
-  let prev=null;
-  return rows.map(r=>{
-    let rent = null;
-    if(prev && prev.valor>0){
-      rent = (r.valor - prev.valor - (r.aportes-prev.aportes)) / prev.valor * 100;
-    }
-    prev = r;
-    return {...r, rent};
-  });
-}
-
 // ---------- rendering ----------
 function renderSelects(){
   const aSel = document.getElementById('newAportante');
@@ -641,24 +580,6 @@ function renderDashboard(){
   gEl.textContent = fmtByFilter(totals.ganancia); gEl.className='v '+(totals.ganancia>=0?'pos':'neg');
   const pEl = document.getElementById('kpiPct');
   pEl.textContent = fmtPct(totals.pct); pEl.className='v '+(totals.pct>=0?'pos':'neg');
-
-  // Mensual: dos gráficos separados, cada uno con su propia escala
-  const serie = monthlySeries();
-  const monthLabels = serie.map(r=>monthLabel(r.ym));
-
-  drawChart('chartMensualValor', 'bar', {
-    labels: monthLabels,
-    datasets: [
-      {label:'Aportado'+labelSuffix, data: serie.map(r=>r.aportes), backgroundColor:'#5B8AA6'},
-      {label:'Rentabilidad'+labelSuffix, data: serie.map(r=>r.valor-r.aportes), backgroundColor: serie.map(r=> (r.valor-r.aportes)>=0?'#C9A227':'#C1553B')}
-    ]
-  }, {stacked:true, plugins:[totalLabelPlugin]});
-
-  drawChart('chartMensualRent', 'bar', {
-    labels: monthLabels,
-    datasets: [{ label:'Rentabilidad mensual (%)', data: serie.map(r=>r.rent),
-      backgroundColor: serie.map(r=> r.rent===null ? 'rgba(159,179,172,0.3)' : (r.rent>=0?'#C9A227':'#C1553B')) }]
-  });
 
   // Por aportante / lugar: aportado + rentabilidad apilados
   function stackedChart(canvasId, groups){
@@ -744,12 +665,6 @@ function drawChart(canvasId, type, chartData, chartOpts){
     opts.scales.y1 = {position:'right', ticks:{color:'#9FB3AC', font:{size:10}}, grid:{drawOnChartArea:false}};
   }
   charts[canvasId] = new Chart(ctx, { type, data: chartData, options: opts, plugins: chartOpts.plugins || [] });
-}
-
-function monthLabel(ym){
-  const meses = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
-  const [y,m] = ym.split('-').map(Number);
-  return meses[m-1]+' '+String(y).slice(2);
 }
 
 function fmtCompact(n){
