@@ -168,6 +168,7 @@
     <div class="section">
       <h2>Por aportante</h2>
       <div class="chart-wrap"><canvas id="chartAportante"></canvas></div>
+      <div id="aportanteDetailList"></div>
     </div>
 
     <div class="section">
@@ -289,6 +290,7 @@ let data = {
 };
 let syncConfig = { gistId: null, token: null };
 let openInvId = null;
+let openAportante = null;
 let editingHist = {}; // invId -> historial index currently being edited, or undefined
 let editingHeaderId = null; // invId currently showing the "editar fondo" form
 let charts = {};
@@ -595,6 +597,7 @@ function renderDashboard(){
     }, {stacked:true, plugins:[totalLabelPlugin]});
   }
   stackedChart('chartAportante', groupBy(inv=>inv.aportante));
+  renderAportanteDetail();
   stackedChart('chartLugar', groupBy(inv=>inv.lugar));
 
   renderFondoRanking();
@@ -625,6 +628,54 @@ function collectAportes(filterMoneda){
     });
   });
   return list;
+}
+
+function renderAportanteDetail(){
+  const container = document.getElementById('aportanteDetailList');
+  const groups = {};
+  data.investments.forEach(inv=>{
+    if(dashboardFilter!=='todas' && inv.moneda!==dashboardFilter) return;
+    if(!groups[inv.aportante]) groups[inv.aportante] = [];
+    groups[inv.aportante].push(inv);
+  });
+  const names = Object.keys(groups);
+  if(names.length===0){ container.innerHTML=''; return; }
+  container.innerHTML = names.map(name=>{
+    const invs = groups[name];
+    let aportado=0, actual=0;
+    invs.forEach(inv=>{
+      const c = computeInv(inv);
+      if(dashboardFilter==='todas'){ aportado+=c.aportesCLP; actual+=c.valorActualCLP; }
+      else { aportado+=c.aportesNative; actual+=c.valorActualNative; }
+    });
+    const ganancia = actual-aportado;
+    const pct = aportado>0 ? ganancia/aportado*100 : 0;
+    const isOpen = openAportante===name;
+    const rows = invs.map(inv=>{
+      const c = computeInv(inv);
+      const val = dashboardFilter==='todas' ? c.valorActualCLP : c.valorActualNative;
+      const gan = dashboardFilter==='todas' ? c.gananciaCLP : c.gananciaNative;
+      const pctInv = dashboardFilter==='todas' ? c.gananciaPctCLP : c.gananciaPctNative;
+      return `<div class="rank-row">
+        <p class="name">${escapeHtml(inv.nombre)} <span style="color:var(--text-muted);">· ${escapeHtml(inv.lugar)} · ${inv.moneda}</span></p>
+        <p class="nums ${gan>=0?'pos':'neg'}">${fmtByFilter(val)} · ${fmtPct(pctInv)}</p>
+      </div>`;
+    }).join('');
+    return `
+    <div class="inv-card">
+      <div class="inv-top" data-toggle-aportante="${escapeHtml(name)}">
+        <div>
+          <p class="inv-name">${escapeHtml(name)}</p>
+          <p class="inv-tags"><span class="tag">${invs.length} fondo${invs.length>1?'s':''}</span></p>
+        </div>
+        <div class="inv-value">
+          <p class="v">${fmtByFilter(actual)}</p>
+          <p class="g ${ganancia>=0?'pos':'neg'}">${fmtPct(pct)}</p>
+        </div>
+      </div>
+      <div class="inv-detail ${isOpen?'open':''}">${rows}</div>
+    </div>`;
+  }).join('');
 }
 
 function renderFondoRanking(){
@@ -849,6 +900,13 @@ function renderAll(){
 }
 
 // ---------- tabs ----------
+document.getElementById('aportanteDetailList').addEventListener('click', (e)=>{
+  const toggle = e.target.closest('[data-toggle-aportante]');
+  if(!toggle) return;
+  const name = toggle.getAttribute('data-toggle-aportante');
+  openAportante = openAportante===name ? null : name;
+  renderAportanteDetail();
+});
 document.querySelectorAll('.filter-btn').forEach(btn=>{
   btn.addEventListener('click', ()=>{
     document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
