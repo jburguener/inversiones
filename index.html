@@ -644,7 +644,7 @@ function renderDashboard(){
         {label:'Aportado', data:aportados, backgroundColor:'#5B8AA6'},
         {label:'Rentabilidad', data:rentabilidades, backgroundColor: rentabilidades.map(r=>r>=0?'#C9A227':'#C1553B')}
       ]
-    }, {stacked:true});
+    }, {stacked:true, plugins:[totalLabelPlugin]});
   }
   stackedChart('chartFondo', groupBy(inv=>inv.nombre));
   stackedChart('chartAportante', groupBy(inv=>inv.aportante));
@@ -662,6 +662,7 @@ function drawChart(canvasId, type, chartData, chartOpts){
   if(charts[canvasId]) charts[canvasId].destroy();
   const opts = {
     responsive:true, maintainAspectRatio:false,
+    layout:{ padding:{ top: chartOpts.plugins ? 22 : 6 } },
     plugins:{ legend:{ labels:{ color:'#EDEAE0', font:{family:'Inter', size:11} } } },
     scales:{
       x:{ stacked: !!chartOpts.stacked, ticks:{ color:'#9FB3AC', font:{size:10} }, grid:{ color:'rgba(237,234,224,0.08)' } },
@@ -672,8 +673,47 @@ function drawChart(canvasId, type, chartData, chartOpts){
     opts.scales.y = {position:'left', ticks:{color:'#9FB3AC', font:{size:10}}, grid:{color:'rgba(237,234,224,0.08)'}};
     opts.scales.y1 = {position:'right', ticks:{color:'#9FB3AC', font:{size:10}}, grid:{drawOnChartArea:false}};
   }
-  charts[canvasId] = new Chart(ctx, { type, data: chartData, options: opts });
+  charts[canvasId] = new Chart(ctx, { type, data: chartData, options: opts, plugins: chartOpts.plugins || [] });
 }
+
+function fmtCompact(n){
+  const sym = dashboardFilter==='USD' ? 'US$' : '$';
+  const sign = n<0 ? '-' : '';
+  const abs = Math.abs(n);
+  let str;
+  if(abs>=1e9) str=(abs/1e9).toFixed(1)+'B';
+  else if(abs>=1e6) str=(abs/1e6).toFixed(1)+'M';
+  else if(abs>=1e3) str=(abs/1e3).toFixed(0)+'K';
+  else str=abs.toFixed(0);
+  return sign+sym+str;
+}
+
+const totalLabelPlugin = {
+  id:'totalLabel',
+  afterDatasetsDraw(chart){
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.font = '600 11px Inter, -apple-system, sans-serif';
+    ctx.fillStyle = '#EDEAE0';
+    ctx.textAlign = 'center';
+    (chart.data.labels||[]).forEach((label, i)=>{
+      let total = 0, minY = Infinity, xPos = null;
+      chart.data.datasets.forEach((ds, dsIndex)=>{
+        const v = ds.data[i];
+        if(typeof v === 'number') total += v;
+        const meta = chart.getDatasetMeta(dsIndex);
+        if(meta && meta.data[i] && !meta.hidden){
+          minY = Math.min(minY, meta.data[i].y);
+          xPos = meta.data[i].x;
+        }
+      });
+      if(xPos!==null && isFinite(minY)){
+        ctx.fillText(fmtCompact(total), xPos, minY-8);
+      }
+    });
+    ctx.restore();
+  }
+};
 
 function renderInvList(){
   const list = document.getElementById('invList');
