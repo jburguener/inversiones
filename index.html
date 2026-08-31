@@ -162,7 +162,7 @@
     </div>
 
     <div class="section">
-      <h2>Fondos: mejor y peor rentabilidad</h2>
+      <h2>Aportes: mejor y peor rentabilidad</h2>
       <div class="ranking-grid">
         <div>
           <p class="tag" style="margin-bottom:8px;">Top 5</p>
@@ -679,22 +679,46 @@ function renderDashboard(){
   renderFondoRanking();
 }
 
+function collectAportes(filterMoneda){
+  filterMoneda = filterMoneda || dashboardFilter;
+  const list = [];
+  data.investments.forEach(inv=>{
+    if(filterMoneda!=='todas' && inv.moneda!==filterMoneda) return;
+    const last = inv.historial[inv.historial.length-1];
+    const valorCuotaActual = last ? last.valorCuota : 0;
+    inv.historial.forEach(h=>{
+      if(!(h.monto>0)) return; // solo aportes reales, no meras actualizaciones de valor cuota
+      const isUSD = inv.moneda==='USD';
+      let monto, valorActual;
+      if(filterMoneda==='todas'){
+        const rateAporte = isUSD ? (h.fxRate||data.fxRate) : 1;
+        monto = isUSD ? h.monto*rateAporte : h.monto;
+        valorActual = h.cuotas*valorCuotaActual*(isUSD?data.fxRate:1);
+      } else {
+        monto = h.monto;
+        valorActual = h.cuotas*valorCuotaActual;
+      }
+      const ganancia = valorActual - monto;
+      const pct = monto>0 ? ganancia/monto*100 : 0;
+      list.push({ fondo:inv.nombre, aportante:inv.aportante, lugar:inv.lugar, fecha:h.fecha, monto, ganancia, pct });
+    });
+  });
+  return list;
+}
+
 function renderFondoRanking(){
-  const porFondo = groupBy(inv=>inv.nombre);
-  const rows = Object.entries(porFondo).map(([nombre, v])=>({
-    nombre, aportado:v.aportado, ganancia: v.actual-v.aportado,
-    pct: v.aportado>0 ? (v.actual-v.aportado)/v.aportado*100 : 0
-  }));
+  const rows = collectAportes();
   rows.sort((a,b)=>a.pct-b.pct);
   const bottom5 = rows.slice(0,5);
   const top5 = rows.slice(-5).reverse();
   const rowHtml = r => `
     <div class="rank-row">
-      <p class="name">${escapeHtml(r.nombre)}</p>
+      <p class="name">${escapeHtml(r.fondo)} <span style="color:var(--text-muted);">· ${r.fecha}</span></p>
       <p class="nums ${r.ganancia>=0?'pos':'neg'}">${fmtByFilter(r.ganancia)} · ${fmtPct(r.pct)}</p>
+      <p style="font-size:10px;color:var(--text-muted);margin:2px 0 0;">${escapeHtml(r.aportante)} · ${escapeHtml(r.lugar)}</p>
     </div>`;
-  document.getElementById('topFondos').innerHTML = top5.length ? top5.map(rowHtml).join('') : '<p style="font-size:12px;color:var(--text-muted);">Sin datos.</p>';
-  document.getElementById('bottomFondos').innerHTML = bottom5.length ? bottom5.map(rowHtml).join('') : '<p style="font-size:12px;color:var(--text-muted);">Sin datos.</p>';
+  document.getElementById('topFondos').innerHTML = top5.length ? top5.map(rowHtml).join('') : '<p style="font-size:12px;color:var(--text-muted);">Sin aportes registrados.</p>';
+  document.getElementById('bottomFondos').innerHTML = bottom5.length ? bottom5.map(rowHtml).join('') : '<p style="font-size:12px;color:var(--text-muted);">Sin aportes registrados.</p>';
 }
 
 function drawChart(canvasId, type, chartData, chartOpts){
