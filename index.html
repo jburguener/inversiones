@@ -90,6 +90,13 @@
   .history-line{font-family:var(--font-mono);font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--border);}
   .history-line:last-child{border-bottom:none;}
 
+  .ranking-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  .rank-row{padding:8px 0;border-bottom:1px dashed var(--border);}
+  .rank-row:last-child{border-bottom:none;}
+  .rank-row .name{font-size:12px;margin:0 0 3px;}
+  .rank-row .nums{font-family:var(--font-mono);font-size:12px;margin:0;}
+  @media (max-width:480px){ .ranking-grid{grid-template-columns:1fr;} }
+
   .empty{text-align:center;padding:40px 20px;color:var(--text-muted);font-size:14px;}
   .empty strong{display:block;color:var(--text);font-family:var(--font-display);font-size:18px;margin-bottom:6px;font-weight:600;}
 
@@ -155,8 +162,17 @@
     </div>
 
     <div class="section">
-      <h2>Por fondo</h2>
-      <div class="chart-wrap"><canvas id="chartFondo"></canvas></div>
+      <h2>Fondos: mejor y peor rentabilidad</h2>
+      <div class="ranking-grid">
+        <div>
+          <p class="tag" style="margin-bottom:8px;">Top 5</p>
+          <div id="topFondos"></div>
+        </div>
+        <div>
+          <p class="tag" style="margin-bottom:8px;">Bottom 5</p>
+          <div id="bottomFondos"></div>
+        </div>
+      </div>
     </div>
 
     <div class="section">
@@ -626,16 +642,17 @@ function renderDashboard(){
   const pEl = document.getElementById('kpiPct');
   pEl.textContent = fmtPct(totals.pct); pEl.className='v '+(totals.pct>=0?'pos':'neg');
 
-  const palette = ['#7FBFA0','#C9A227','#C1553B','#5B8AA6','#9B8AC4','#D98B6B'];
-
   // Mensual: dos gráficos separados, cada uno con su propia escala
   const serie = monthlySeries();
   const monthLabels = serie.map(r=>monthLabel(r.ym));
 
   drawChart('chartMensualValor', 'bar', {
     labels: monthLabels,
-    datasets: [{ label:'Valor cartera'+labelSuffix, data: serie.map(r=>r.valor), backgroundColor:'#7FBFA0' }]
-  }, {plugins:[totalLabelPlugin]});
+    datasets: [
+      {label:'Aportado'+labelSuffix, data: serie.map(r=>r.aportes), backgroundColor:'#5B8AA6'},
+      {label:'Rentabilidad'+labelSuffix, data: serie.map(r=>r.valor-r.aportes), backgroundColor: serie.map(r=> (r.valor-r.aportes)>=0?'#C9A227':'#C1553B')}
+    ]
+  }, {stacked:true, plugins:[totalLabelPlugin]});
 
   drawChart('chartMensualRent', 'bar', {
     labels: monthLabels,
@@ -643,7 +660,7 @@ function renderDashboard(){
       backgroundColor: serie.map(r=> r.rent===null ? 'rgba(159,179,172,0.3)' : (r.rent>=0?'#C9A227':'#C1553B')) }]
   });
 
-  // Por fondo / aportante / lugar: aportado + rentabilidad apilados
+  // Por aportante / lugar: aportado + rentabilidad apilados
   function stackedChart(canvasId, groups){
     const labels = Object.keys(groups);
     const aportados = Object.values(groups).map(v=>v.aportado);
@@ -656,9 +673,28 @@ function renderDashboard(){
       ]
     }, {stacked:true, plugins:[totalLabelPlugin]});
   }
-  stackedChart('chartFondo', groupBy(inv=>inv.nombre));
   stackedChart('chartAportante', groupBy(inv=>inv.aportante));
   stackedChart('chartLugar', groupBy(inv=>inv.lugar));
+
+  renderFondoRanking();
+}
+
+function renderFondoRanking(){
+  const porFondo = groupBy(inv=>inv.nombre);
+  const rows = Object.entries(porFondo).map(([nombre, v])=>({
+    nombre, aportado:v.aportado, ganancia: v.actual-v.aportado,
+    pct: v.aportado>0 ? (v.actual-v.aportado)/v.aportado*100 : 0
+  }));
+  rows.sort((a,b)=>a.pct-b.pct);
+  const bottom5 = rows.slice(0,5);
+  const top5 = rows.slice(-5).reverse();
+  const rowHtml = r => `
+    <div class="rank-row">
+      <p class="name">${escapeHtml(r.nombre)}</p>
+      <p class="nums ${r.ganancia>=0?'pos':'neg'}">${fmtByFilter(r.ganancia)} · ${fmtPct(r.pct)}</p>
+    </div>`;
+  document.getElementById('topFondos').innerHTML = top5.length ? top5.map(rowHtml).join('') : '<p style="font-size:12px;color:var(--text-muted);">Sin datos.</p>';
+  document.getElementById('bottomFondos').innerHTML = bottom5.length ? bottom5.map(rowHtml).join('') : '<p style="font-size:12px;color:var(--text-muted);">Sin datos.</p>';
 }
 
 function drawChart(canvasId, type, chartData, chartOpts){
