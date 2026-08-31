@@ -145,8 +145,13 @@
     </div>
 
     <div class="section">
-      <h2>Evolución mensual</h2>
-      <div class="chart-wrap"><canvas id="chartMensual"></canvas></div>
+      <h2>Valor de la cartera por mes</h2>
+      <div class="chart-wrap"><canvas id="chartMensualValor"></canvas></div>
+    </div>
+
+    <div class="section">
+      <h2>Rentabilidad mensual</h2>
+      <div class="chart-wrap"><canvas id="chartMensualRent"></canvas></div>
     </div>
 
     <div class="section">
@@ -623,15 +628,20 @@ function renderDashboard(){
 
   const palette = ['#7FBFA0','#C9A227','#C1553B','#5B8AA6','#9B8AC4','#D98B6B'];
 
-  // Mensual
+  // Mensual: dos gráficos separados, cada uno con su propia escala
   const serie = monthlySeries();
-  drawChart('chartMensual', 'bar', {
-    labels: serie.map(r=>r.ym),
-    datasets: [
-      {type:'bar', label:'Valor cartera'+labelSuffix, data: serie.map(r=>r.valor), backgroundColor:'#7FBFA0', yAxisID:'y'},
-      {type:'line', label:'Rentabilidad mensual (%)', data: serie.map(r=>r.rent), borderColor:'#C9A227', backgroundColor:'#C9A227', yAxisID:'y1', tension:.3, spanGaps:true}
-    ]
-  }, {dualAxis:true});
+  const monthLabels = serie.map(r=>monthLabel(r.ym));
+
+  drawChart('chartMensualValor', 'bar', {
+    labels: monthLabels,
+    datasets: [{ label:'Valor cartera'+labelSuffix, data: serie.map(r=>r.valor), backgroundColor:'#7FBFA0' }]
+  }, {plugins:[totalLabelPlugin]});
+
+  drawChart('chartMensualRent', 'bar', {
+    labels: monthLabels,
+    datasets: [{ label:'Rentabilidad mensual (%)', data: serie.map(r=>r.rent),
+      backgroundColor: serie.map(r=> r.rent===null ? 'rgba(159,179,172,0.3)' : (r.rent>=0?'#C9A227':'#C1553B')) }]
+  });
 
   // Por fondo / aportante / lugar: aportado + rentabilidad apilados
   function stackedChart(canvasId, groups){
@@ -674,6 +684,12 @@ function drawChart(canvasId, type, chartData, chartOpts){
     opts.scales.y1 = {position:'right', ticks:{color:'#9FB3AC', font:{size:10}}, grid:{drawOnChartArea:false}};
   }
   charts[canvasId] = new Chart(ctx, { type, data: chartData, options: opts, plugins: chartOpts.plugins || [] });
+}
+
+function monthLabel(ym){
+  const meses = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  const [y,m] = ym.split('-').map(Number);
+  return meses[m-1]+' '+String(y).slice(2);
 }
 
 function fmtCompact(n){
