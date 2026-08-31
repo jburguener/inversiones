@@ -210,6 +210,10 @@
   <!-- AJUSTES -->
   <div class="tabpanel" id="tab-ajustes">
     <div class="section">
+      <h2>Sincronización entre dispositivos</h2>
+      <div id="syncSection"></div>
+    </div>
+    <div class="section">
       <h2>Aportantes</h2>
       <div id="aportantesList"></div>
       <div class="field-row" style="margin-top:10px;">
@@ -258,8 +262,10 @@ let data = {
   investments: [],
   aportantes: ['Agus&Joaco','Ma de los Angeles','Alicia','Martin'],
   lugares: ['Santander Joaco','Santander Agus','Consorcio'],
-  fxRate: 950
+  fxRate: 950,
+  lastUpdated: null
 };
+let syncConfig = { gistId: null, token: null };
 let openInvId = null;
 let charts = {};
 
@@ -275,8 +281,146 @@ function load(){
 }
 function save(){
   try{
+    data.lastUpdated = new Date().toISOString();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    scheduleSyncPush();
   }catch(e){ console.error('Error guardando datos', e); alert('No se pudo guardar. Puede que el almacenamiento esté lleno.'); }
+}
+
+// ---------- sincronización entre dispositivos (GitHub Gist) ----------
+const SYNC_KEY = 'inversiones_sync_v1';
+let pushTimer = null;
+
+function loadSyncConfig(){
+  try{
+    const raw = localStorage.getItem(SYNC_KEY);
+    if(raw) syncConfig = JSON.parse(raw);
+  }catch(e){ /* ignore */ }
+}
+function saveSyncConfig(){
+  localStorage.setItem(SYNC_KEY, JSON.stringify(syncConfig));
+}
+function setSyncStatus(msg){
+  const el = document.getElementById('syncStatus');
+  if(el) el.textContent = msg;
+}
+function scheduleSyncPush(){
+  if(!syncConfig.gistId || !syncConfig.token) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushToGist, 1200);
+}
+async function pushToGist(){
+  if(!syncConfig.gistId || !syncConfig.token) return;
+  try{
+    const res = await fetch('https://api.github.com/gists/'+syncConfig.gistId, {
+      method:'PATCH',
+      headers:{'Authorization':'token '+syncConfig.token, 'Content-Type':'application/json'},
+      body: JSON.stringify({ files: { 'inversiones.json': { content: JSON.stringify(data) } } })
+    });
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    setSyncStatus('Sincronizado · '+new Date().toLocaleTimeString('es-CL'));
+  }catch(e){
+    setSyncStatus('No se pudo subir el cambio (revisa conexión o el token)');
+  }
+}
+async function pullFromGist(){
+  if(!syncConfig.gistId) return;
+  try{
+    const res = await fetch('https://api.github.com/gists/'+syncConfig.gistId);
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const json = await res.json();
+    const file = json.files && json.files['inversiones.json'];
+    if(!file) throw new Error('Gist sin datos');
+    const remote = JSON.parse(file.content);
+    if(!data.lastUpdated || (remote.lastUpdated && remote.lastUpdated > data.lastUpdated)){
+      data = Object.assign({investments:[],aportantes:[],lugares:[],fxRate:950,lastUpdated:null}, remote);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      renderAll();
+    }
+    setSyncStatus('Sincronizado · '+new Date().toLocaleTimeString('es-CL'));
+  }catch(e){
+    setSyncStatus('Sin conexión, usando datos locales');
+  }
+}
+async function createSync(){
+  const token = document.getElementById('syncTokenInput').value.trim();
+  if(!token){ alert('Pega primero tu token de GitHub.'); return; }
+  try{
+    const res = await fetch('https://api.github.com/gists', {
+      method:'POST',
+      headers:{'Authorization':'token '+token, 'Content-Type':'application/json'},
+      body: JSON.stringify({ description:'Inversiones Familia - datos sincronizados', public:false,
+        files:{ 'inversiones.json': { content: JSON.stringify(data) } } })
+    });
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const json = await res.json();
+    syncConfig = { gistId: json.id, token };
+    saveSyncConfig();
+    renderSyncSection();
+    alert('¡Sincronización creada! Copia el código y pégalo en tu otro dispositivo.');
+  }catch(e){
+    alert('No se pudo crear la sincronización. Revisa que el token tenga permiso "gist" y que tengas conexión.');
+  }
+}
+async function joinSync(){
+  const code = document.getElementById('syncCodeInput').value.trim();
+  const parts = code.split('::');
+  if(parts.length!==2){ alert('El código debe tener el formato gistId::token'); return; }
+  syncConfig = { gistId: parts[0], token: parts[1] };
+  saveSyncConfig();
+  await pullFromGist();
+  renderSyncSection();
+  alert('Conectado. Tus datos ahora se sincronizan con el otro dispositivo.');
+}
+function unsync(){
+  if(!confirm('Esto desconecta este dispositivo de la sincronización (tus datos locales se quedan igual). ¿Continuar?')) return;
+  syncConfig = { gistId:null, token:null };
+  saveSyncConfig();
+  renderSyncSection();
+}
+function renderSyncSection(){
+  const el = document.getElementById('syncSection');
+  if(!el) return;
+  if(syncConfig.gistId && syncConfig.token){
+    const code = syncConfig.gistId + '::' + syncConfig.token;
+    el.innerHTML = `
+      <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;" id="syncStatus">Sincronización activa</p>
+      <label>Código para tu otro dispositivo</label>
+      <div style="display:flex;gap:8px;margin-bottom:10px;">
+        <input type="text" id="syncCodeDisplay" value="${escapeHtml(code)}" readonly style="flex:1;">
+        <button class="small-btn" id="btnCopyCode">Copiar</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="small-btn" id="btnSyncNow">Sincronizar ahora</button>
+        <button class="small-btn danger" id="btnUnsync">Desconectar</button>
+      </div>`;
+    document.getElementById('btnCopyCode').addEventListener('click', ()=>{
+      navigator.clipboard.writeText(code).then(()=>alert('Código copiado.')).catch(()=>{});
+    });
+    document.getElementById('btnSyncNow').addEventListener('click', pullFromGist);
+    document.getElementById('btnUnsync').addEventListener('click', unsync);
+  } else if(syncConfig.gistId && !syncConfig.token){
+    el.innerHTML = `<p style="font-size:12px;color:var(--text-muted);" id="syncStatus">Conectado en modo solo lectura (sin token, no se pueden subir cambios desde este dispositivo).</p>`;
+  } else {
+    el.innerHTML = `
+      <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;" id="syncStatus">
+        Para ver la app en varios dispositivos con los mismos datos, se guarda un respaldo privado en tu cuenta de GitHub (un "Gist" secreto) y cada dispositivo lo lee/escribe.
+      </p>
+      <label>1. Crea un token de GitHub con permiso "gist"</label>
+      <div style="margin-bottom:10px;"><a href="https://github.com/settings/tokens/new?scopes=gist&description=Inversiones%20Familia" target="_blank" rel="noopener" class="small-btn" style="display:inline-block;text-decoration:none;">Crear token en GitHub</a></div>
+      <label>2. Pega el token aquí y crea la sincronización (hazlo solo en un dispositivo)</label>
+      <div style="display:flex;gap:8px;margin-bottom:16px;">
+        <input type="password" id="syncTokenInput" placeholder="ghp_..." style="flex:1;">
+        <button class="add-btn" id="btnCreateSync">Crear</button>
+      </div>
+      <label>¿Ya tienes un código de otro dispositivo?</label>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="syncCodeInput" placeholder="gistId::token" style="flex:1;">
+        <button class="small-btn" id="btnJoinSync">Usar código</button>
+      </div>`;
+    document.getElementById('btnCreateSync').addEventListener('click', createSync);
+    document.getElementById('btnJoinSync').addEventListener('click', joinSync);
+  }
 }
 
 // ---------- helpers ----------
@@ -543,6 +687,7 @@ function renderAll(){
   renderInvList();
   renderDashboard();
   renderWeekly();
+  renderSyncSection();
 }
 
 // ---------- tabs ----------
@@ -772,7 +917,15 @@ if('serviceWorker' in navigator){
 
 // ---------- init ----------
 load();
+loadSyncConfig();
 renderAll();
+if(syncConfig.gistId){
+  pullFromGist();
+}
+setInterval(()=>{ if(syncConfig.gistId) pullFromGist(); }, 20000);
+document.addEventListener('visibilitychange', ()=>{
+  if(!document.hidden && syncConfig.gistId) pullFromGist();
+});
 </script>
 </body>
 </html>
