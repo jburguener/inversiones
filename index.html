@@ -115,6 +115,7 @@
 <nav class="tabs">
   <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
   <button class="tab-btn" data-tab="inversiones">Inversiones</button>
+  <button class="tab-btn" data-tab="actualizar">Actualizar</button>
   <button class="tab-btn" data-tab="ajustes">Ajustes</button>
 </nav>
 
@@ -188,6 +189,24 @@
     <div id="invList"></div>
   </div>
 
+  <!-- ACTUALIZAR -->
+  <div class="tabpanel" id="tab-actualizar">
+    <div class="section-title"><span>Actualización semanal</span></div>
+    <div class="section">
+      <label>Fecha de esta actualización</label>
+      <input type="date" id="weeklyFecha" style="max-width:200px;margin-bottom:10px;">
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+        <button type="button" class="small-btn" id="btnFechaHoy">Hoy</button>
+        <button type="button" class="small-btn" id="btnFechaFinMesAnterior">Fin de mes anterior</button>
+        <button type="button" class="small-btn" id="btnFechaFinMesActual">Fin de este mes</button>
+      </div>
+      <div id="weeklyList"></div>
+      <div class="form-actions" style="margin-top:12px;padding-bottom:8px;">
+        <button class="add-btn" id="btnSaveWeekly">Guardar actualización</button>
+      </div>
+    </div>
+  </div>
+
   <!-- AJUSTES -->
   <div class="tabpanel" id="tab-ajustes">
     <div class="section">
@@ -205,6 +224,20 @@
         <input type="text" id="newLugarInput" placeholder="Nuevo lugar">
         <button class="small-btn" id="btnAddLugar">Agregar</button>
       </div>
+    </div>
+    <div class="section">
+      <h2>Carga histórica masiva</h2>
+      <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;">
+        Una línea por registro, separando los campos con punto y coma (<code>;</code>), en este orden:<br>
+        <code>nombre del fondo;aportante;lugar;AAAA-MM-DD;valor cuota;monto (0 si no hubo aporte)</code><br>
+        El nombre, aportante y lugar deben coincidir exactamente con una inversión que ya exista en la pestaña Inversiones.
+      </p>
+      <textarea id="bulkTextarea" rows="6" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:10px;font-family:var(--font-mono);font-size:12px;" placeholder="Fondo Renta Global;Agus&amp;Joaco;Santander Joaco;2026-01-31;24850.10;0
+Fondo Renta Global;Agus&amp;Joaco;Santander Joaco;2026-02-28;25010.55;0"></textarea>
+      <div class="form-actions" style="margin-top:10px;">
+        <button class="add-btn" id="btnProcesarBulk">Procesar carga</button>
+      </div>
+      <div id="bulkResults" style="margin-top:10px;font-family:var(--font-mono);font-size:12px;"></div>
     </div>
     <footer class="settings">
       Los datos se guardan solo en este teléfono (localStorage), no se sincronizan con nadie más.
@@ -251,6 +284,16 @@ function fmtCLP(n){ return Math.round(n).toLocaleString('es-CL', {style:'currenc
 function fmtCuota(n){ return n.toLocaleString('es-CL', {minimumFractionDigits:2, maximumFractionDigits:4}); }
 function fmtPct(n){ if(n===null||isNaN(n)) return 'N/D'; return (n>=0?'+':'') + n.toLocaleString('es-CL',{minimumFractionDigits:1,maximumFractionDigits:1}) + '%'; }
 function uid(){ return 'i'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function groupKey(nombre){ return nombre.trim().toLowerCase().replace(/[^a-z0-9]+/g,'-'); }
+function groupInvestmentsByFondo(){
+  const groups = {};
+  data.investments.forEach(inv=>{
+    const key = groupKey(inv.nombre);
+    if(!groups[key]) groups[key] = { nombre: inv.nombre, items: [] };
+    groups[key].items.push(inv);
+  });
+  return Object.values(groups);
+}
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 function escapeHtml(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 function toCLP(amount, moneda){ return moneda==='USD' ? amount*data.fxRate : amount; }
@@ -465,11 +508,41 @@ function renderInvList(){
   }).join('');
 }
 
+function renderWeekly(){
+  const fechaInput = document.getElementById('weeklyFecha');
+  if(!fechaInput.value) fechaInput.value = todayStr();
+  const list = document.getElementById('weeklyList');
+  if(data.investments.length===0){
+    list.innerHTML = `<div class="empty"><strong>Aún no hay inversiones</strong>Agrega tus fondos primero en la pestaña Inversiones.</div>`;
+    return;
+  }
+  const groups = groupInvestmentsByFondo();
+  list.innerHTML = groups.map(g=>{
+    const gkey = groupKey(g.nombre);
+    const itemRows = g.items.map(inv=>{
+      const c = computeInv(inv);
+      return `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:6px 0;flex-wrap:wrap;">
+        <span style="font-size:12px;color:var(--text-muted);">${escapeHtml(inv.aportante)} · ${escapeHtml(inv.lugar)} <span style="color:var(--text);">(cuota actual ${fmtCuota(c.valorCuotaActual)})</span></span>
+        <input type="number" id="weeklyMonto-${inv.id}" placeholder="Aporte adic. 0" style="max-width:130px;">
+      </div>`;
+    }).join('');
+    return `
+    <div class="detail-cell" style="margin-bottom:16px;padding-bottom:14px;border-bottom:1px dashed var(--border);">
+      <p class="tag" style="display:inline-block;margin-bottom:8px;">${escapeHtml(g.nombre)}</p>
+      <label>Valor cuota nuevo ${g.items.length>1 ? `(se aplica a las ${g.items.length} inversiones de este fondo)` : ''}</label>
+      <input type="number" step="any" id="weeklyVC-${gkey}" placeholder="valor cuota" style="margin-bottom:8px;">
+      ${itemRows}
+    </div>`;
+  }).join('');
+}
+
 function renderAll(){
   renderSelects();
   renderAjustes();
   renderInvList();
   renderDashboard();
+  renderWeekly();
 }
 
 // ---------- tabs ----------
@@ -480,7 +553,49 @@ document.querySelectorAll('.tab-btn').forEach(btn=>{
     btn.classList.add('active');
     document.getElementById('tab-'+btn.dataset.tab).classList.add('active');
     if(btn.dataset.tab==='dashboard') renderDashboard();
+    if(btn.dataset.tab==='actualizar') renderWeekly();
   });
+});
+
+// ---------- actualización semanal ----------
+document.getElementById('btnFechaHoy').addEventListener('click', ()=>{
+  document.getElementById('weeklyFecha').value = todayStr();
+});
+document.getElementById('btnFechaFinMesAnterior').addEventListener('click', ()=>{
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth(), 0);
+  document.getElementById('weeklyFecha').value = d.toISOString().slice(0,10);
+});
+document.getElementById('btnFechaFinMesActual').addEventListener('click', ()=>{
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth()+1, 0);
+  document.getElementById('weeklyFecha').value = d.toISOString().slice(0,10);
+});
+document.getElementById('btnSaveWeekly').addEventListener('click', ()=>{
+  const fecha = document.getElementById('weeklyFecha').value || todayStr();
+  const groups = groupInvestmentsByFondo();
+  let fondosCount = 0, invCount = 0;
+  groups.forEach(g=>{
+    const gkey = groupKey(g.nombre);
+    const vcInput = document.getElementById('weeklyVC-'+gkey);
+    const valorCuota = parseFloat(vcInput.value);
+    if(valorCuota > 0){
+      fondosCount++;
+      g.items.forEach(inv=>{
+        const montoInput = document.getElementById('weeklyMonto-'+inv.id);
+        const monto = parseFloat(montoInput.value) || 0;
+        const cuotas = monto>0 ? monto/valorCuota : 0;
+        inv.historial.push({fecha, valorCuota, monto, cuotas});
+        inv.historial.sort((a,b)=>a.fecha.localeCompare(b.fecha));
+        invCount++;
+      });
+    }
+  });
+  if(fondosCount===0){ alert('No ingresaste ningún valor cuota nuevo.'); return; }
+  save();
+  renderAll();
+  document.getElementById('weeklyFecha').value = fecha;
+  alert(`Actualizaste ${fondosCount} fondo(s) (${invCount} inversión(es) en total) al ${fecha}.`);
 });
 
 // ---------- add investment ----------
@@ -552,6 +667,55 @@ document.getElementById('aportantesList').addEventListener('click', (e)=>{
 document.getElementById('lugaresList').addEventListener('click', (e)=>{
   const btn = e.target.closest('[data-remove-lugar]');
   if(btn){ data.lugares.splice(parseInt(btn.dataset.removeLugar),1); save(); renderAll(); }
+});
+
+// ---------- carga histórica masiva ----------
+document.getElementById('btnProcesarBulk').addEventListener('click', ()=>{
+  const raw = document.getElementById('bulkTextarea').value;
+  const lines = raw.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
+  const results = [];
+  let okCount = 0;
+  lines.forEach((line, idx)=>{
+    const parts = line.split(';').map(p=>p.trim());
+    if(parts.length < 5){
+      results.push({line: idx+1, ok:false, msg:'Faltan columnas (se esperan al menos 5, separadas por ;)'});
+      return;
+    }
+    const [nombre, aportante, lugar, fecha, valorCuotaStr, montoStr] = parts;
+    const valorCuota = parseFloat(valorCuotaStr);
+    const monto = montoStr ? (parseFloat(montoStr) || 0) : 0;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(fecha)){
+      results.push({line: idx+1, ok:false, msg:'Fecha inválida, usa AAAA-MM-DD'});
+      return;
+    }
+    if(!valorCuota || valorCuota<=0){
+      results.push({line: idx+1, ok:false, msg:'Valor cuota inválido'});
+      return;
+    }
+    const inv = data.investments.find(i=>
+      i.nombre.trim().toLowerCase()===nombre.toLowerCase() &&
+      i.aportante.trim().toLowerCase()===aportante.toLowerCase() &&
+      i.lugar.trim().toLowerCase()===lugar.toLowerCase()
+    );
+    if(!inv){
+      results.push({line: idx+1, ok:false, msg:`No se encontró la inversión "${nombre}" / "${aportante}" / "${lugar}"`});
+      return;
+    }
+    const cuotas = monto>0 ? monto/valorCuota : 0;
+    inv.historial.push({fecha, valorCuota, monto, cuotas});
+    okCount++;
+    results.push({line: idx+1, ok:true, msg:`Cargado en "${inv.nombre}" (${fecha})`});
+  });
+  data.investments.forEach(inv=> inv.historial.sort((a,b)=>a.fecha.localeCompare(b.fecha)));
+  if(okCount>0) save();
+  const resDiv = document.getElementById('bulkResults');
+  resDiv.innerHTML = results.map(r=>
+    `<div style="color:${r.ok?'var(--mint)':'var(--rust)'};margin-bottom:2px;">Línea ${r.line}: ${r.ok?'✓':'✗'} ${escapeHtml(r.msg)}</div>`
+  ).join('') + `<div style="margin-top:6px;color:var(--text-muted);">${okCount} de ${lines.length} registros cargados.</div>`;
+  if(okCount>0){
+    document.getElementById('bulkTextarea').value = '';
+    renderAll();
+  }
 });
 
 // ---------- fx rate ----------
