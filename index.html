@@ -582,7 +582,9 @@ function renderDashboard(){
 }
 
 function drawChart(canvasId, type, chartData, dualAxis){
+  if(typeof Chart === 'undefined'){ return; }
   const ctx = document.getElementById(canvasId);
+  if(!ctx) return;
   if(charts[canvasId]) charts[canvasId].destroy();
   const opts = {
     responsive:true, maintainAspectRatio:false,
@@ -682,12 +684,12 @@ function renderWeekly(){
 }
 
 function renderAll(){
-  renderSelects();
-  renderAjustes();
-  renderInvList();
-  renderDashboard();
-  renderWeekly();
-  renderSyncSection();
+  try{ renderSelects(); }catch(e){ console.error('renderSelects', e); }
+  try{ renderAjustes(); }catch(e){ console.error('renderAjustes', e); }
+  try{ renderInvList(); }catch(e){ console.error('renderInvList', e); }
+  try{ renderDashboard(); }catch(e){ console.error('renderDashboard', e); }
+  try{ renderWeekly(); }catch(e){ console.error('renderWeekly', e); }
+  try{ renderSyncSection(); }catch(e){ console.error('renderSyncSection', e); }
 }
 
 // ---------- tabs ----------
