@@ -638,9 +638,7 @@ function renderAportanteDetail(){
     if(!groups[inv.aportante]) groups[inv.aportante] = [];
     groups[inv.aportante].push(inv);
   });
-  const names = Object.keys(groups);
-  if(names.length===0){ container.innerHTML=''; return; }
-  container.innerHTML = names.map(name=>{
+  const entries = Object.keys(groups).map(name=>{
     const invs = groups[name];
     let aportado=0, actual=0;
     invs.forEach(inv=>{
@@ -650,17 +648,24 @@ function renderAportanteDetail(){
     });
     const ganancia = actual-aportado;
     const pct = aportado>0 ? ganancia/aportado*100 : 0;
+    return {name, invs, actual, ganancia, pct};
+  });
+  entries.sort((a,b)=>b.pct-a.pct);
+  if(entries.length===0){ container.innerHTML=''; return; }
+  container.innerHTML = entries.map(({name, invs, actual, ganancia, pct})=>{
     const isOpen = openAportante===name;
-    const rows = invs.map(inv=>{
+    const invRows = invs.map(inv=>{
       const c = computeInv(inv);
       const val = dashboardFilter==='todas' ? c.valorActualCLP : c.valorActualNative;
       const gan = dashboardFilter==='todas' ? c.gananciaCLP : c.gananciaNative;
       const pctInv = dashboardFilter==='todas' ? c.gananciaPctCLP : c.gananciaPctNative;
-      return `<div class="rank-row">
+      return {inv, val, gan, pctInv};
+    }).sort((a,b)=>b.pctInv-a.pctInv).map(({inv,val,gan,pctInv})=>`
+      <div class="rank-row">
         <p class="name">${escapeHtml(inv.nombre)} <span style="color:var(--text-muted);">· ${escapeHtml(inv.lugar)} · ${inv.moneda}</span></p>
-        <p class="nums ${gan>=0?'pos':'neg'}">${fmtByFilter(val)} · ${fmtPct(pctInv)}</p>
-      </div>`;
-    }).join('');
+        <p class="nums">${fmtByFilter(val)}</p>
+        <p class="nums ${gan>=0?'pos':'neg'}">${fmtByFilter(gan)} · ${fmtPct(pctInv)}</p>
+      </div>`).join('');
     return `
     <div class="inv-card">
       <div class="inv-top" data-toggle-aportante="${escapeHtml(name)}">
@@ -670,10 +675,10 @@ function renderAportanteDetail(){
         </div>
         <div class="inv-value">
           <p class="v">${fmtByFilter(actual)}</p>
-          <p class="g ${ganancia>=0?'pos':'neg'}">${fmtPct(pct)}</p>
+          <p class="g ${ganancia>=0?'pos':'neg'}">${fmtByFilter(ganancia)} · ${fmtPct(pct)}</p>
         </div>
       </div>
-      <div class="inv-detail ${isOpen?'open':''}">${rows}</div>
+      <div class="inv-detail ${isOpen?'open':''}">${invRows}</div>
     </div>`;
   }).join('');
 }
