@@ -490,9 +490,24 @@ function groupInvestmentsByFondo(){
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 function escapeHtml(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 function toCLP(amount, moneda){ return moneda==='USD' ? amount*data.fxRate : amount; }
+function montoSymFor(inv){ return inv.moneda==='USD' ? 'US$' : '$'; }
+
+// Resolves a redemption: needs valorCuota plus either cuotas-a-rescatar or monto-a-recibir.
+function resolveRescate(montoRaw, valorCuotaRaw, cuotasRaw){
+  const has = s => s!==undefined && s!==null && s!=='' && !isNaN(parseFloat(s));
+  let monto = has(montoRaw) ? parseFloat(montoRaw) : null;
+  let valorCuota = has(valorCuotaRaw) ? parseFloat(valorCuotaRaw) : null;
+  let cuotas = has(cuotasRaw) ? parseFloat(cuotasRaw) : null;
+  if(valorCuota===null || valorCuota<=0) return null;
+  if(monto===null && cuotas===null) return null;
+  if(cuotas===null){ cuotas = monto/valorCuota; }
+  else if(monto===null){ monto = cuotas*valorCuota; }
+  if(cuotas<=0) return null;
+  return {cuotas, valorCuota, monto};
+}
 
 function computeInv(inv){
-  let cuotas=0, aportesNative=0, aportesCLP=0;
+  let cuotas=0, aportesNative=0, aportesCLP=0, gananciaRealizadaNative=0;
   inv.historial.forEach(h=>{
     cuotas += h.cuotas;
     aportesNative += h.monto;
@@ -502,6 +517,7 @@ function computeInv(inv){
     } else {
       aportesCLP += h.monto;
     }
+    if(h.tipo==='rescate'){ gananciaRealizadaNative += (h.gananciaRealizada||0); }
   });
   const last = inv.historial[inv.historial.length-1];
   const valorCuotaActual = last ? last.valorCuota : 0;
@@ -511,7 +527,7 @@ function computeInv(inv){
   const gananciaCLP = valorActualCLP - aportesCLP;
   const gananciaPctNative = aportesNative>0 ? gananciaNative/aportesNative*100 : 0;
   const gananciaPctCLP = aportesCLP>0 ? gananciaCLP/aportesCLP*100 : 0;
-  return { cuotas, valorCuotaActual,
+  return { cuotas, valorCuotaActual, gananciaRealizadaNative,
     aportesNative, valorActualNative, gananciaNative, gananciaPctNative,
     aportesCLP, valorActualCLP, gananciaCLP, gananciaPctCLP };
 }
@@ -774,18 +790,28 @@ function renderInvList(){
     const isUSD = inv.moneda==='USD';
     const montoSym = isUSD ? 'US$' : '$';
     const rows = inv.historial.slice().reverse().map(h=>{
-      const tipo = h.monto>0 ? 'Aporte' : 'Actualización';
-      const montoTxt = h.monto>0 ? (' · '+ (isUSD?'US$'+h.monto.toLocaleString('es-CL'):fmtCLP(h.monto)) + (isUSD && h.fxRate ? ' · TC '+h.fxRate : '')) : '';
+      const esRescate = h.tipo==='rescate';
+      const tipo = esRescate ? 'Rescate' : (h.monto>0 ? 'Aporte' : 'Actualización');
+      let montoTxt = '';
+      if(esRescate){
+        const montoOut = isUSD?'US$'+Math.round(h.montoRescatado).toLocaleString('es-CL'):fmtCLP(h.montoRescatado);
+        const gTxt = (h.gananciaRealizada>=0?'+':'')+(isUSD?'US$'+Math.round(h.gananciaRealizada).toLocaleString('es-CL'):fmtCLP(h.gananciaRealizada));
+        montoTxt = ` · ${montoOut} recibido · <span class="${h.gananciaRealizada>=0?'pos':'neg'}">${gTxt}</span>`;
+      } else if(h.monto>0){
+        montoTxt = ' · '+ (isUSD?'US$'+h.monto.toLocaleString('es-CL'):fmtCLP(h.monto)) + (isUSD && h.fxRate ? ' · TC '+h.fxRate : '');
+      }
+      const editBtn = esRescate ? '' : `<button class="small-btn" style="padding:2px 6px;font-size:11px;" data-action="editmov" data-id="${inv.id}" data-mid="${h.mid}">✎</button>`;
       return `
       <div>
         <div class="history-line">
-          <span>${h.fecha} · ${tipo} · ${fmtCuota(h.cuotas)} cuotas</span>
+          <span>${h.fecha} · ${tipo} · ${fmtCuota(Math.abs(h.cuotas))} cuotas</span>
           <span style="display:flex;align-items:center;gap:8px;">
             Cuota ${fmtCuota(h.valorCuota)}${montoTxt}
-            <button class="small-btn" style="padding:2px 6px;font-size:11px;" data-action="editmov" data-id="${inv.id}" data-mid="${h.mid}">✎</button>
+            ${editBtn}
             <button class="small-btn danger" style="padding:2px 6px;font-size:11px;" data-action="deletemov" data-id="${inv.id}" data-mid="${h.mid}">🗑</button>
           </span>
         </div>
+        ${esRescate ? '' : `
         <form class="inline-form" id="editMovForm-${h.mid}">
           <div class="field-row">
             <div><label>Fecha</label><input type="date" id="editMovFecha-${h.mid}" value="${h.fecha}"></div>
@@ -800,7 +826,7 @@ function renderInvList(){
             <button type="button" class="small-btn" data-action="canceleditmov" data-mid="${h.mid}">Cancelar</button>
             <button type="button" class="add-btn" data-action="saveeditmov" data-id="${inv.id}" data-mid="${h.mid}">Guardar cambios</button>
           </div>
-        </form>
+        </form>`}
       </div>`;
     }).join('');
     return `
@@ -820,12 +846,31 @@ function renderInvList(){
           <div class="detail-cell"><p class="k">Cuotas</p><p class="v">${fmtCuota(c.cuotas)}</p></div>
           <div class="detail-cell"><p class="k">Valor cuota</p><p class="v">${fmtCuota(c.valorCuotaActual)}</p></div>
           <div class="detail-cell"><p class="k">Aportado</p><p class="v">${montoSym}${Math.round(c.aportesNative).toLocaleString('es-CL')}</p></div>
+          ${c.gananciaRealizadaNative!==0 ? `<div class="detail-cell"><p class="k">Ganancia realizada</p><p class="v ${c.gananciaRealizadaNative>=0?'pos':'neg'}">${montoSym}${Math.round(c.gananciaRealizadaNative).toLocaleString('es-CL')}</p></div>` : ''}
         </div>
         <div class="inv-actions">
           <button class="small-btn" data-action="addmov" data-id="${inv.id}">+ Registrar movimiento</button>
+          <button class="small-btn" data-action="addrescate" data-id="${inv.id}">Registrar rescate</button>
           <button class="small-btn" data-action="editfund" data-id="${inv.id}">Editar datos del fondo</button>
           <button class="small-btn danger" data-action="delete" data-id="${inv.id}">Eliminar</button>
         </div>
+        <form class="inline-form" id="rescateForm-${inv.id}">
+          <p style="font-size:11px;color:var(--text-muted);margin:0 0 4px;">El costo base se descuenta en proporción a tus cuotas actuales, y la ganancia o pérdida queda registrada — ese monto deja de ser parte del fondo.</p>
+          <div class="field-row">
+            <div><label>Fecha</label><input type="date" id="rescateFecha-${inv.id}" value="${todayStr()}"></div>
+            <div><label>Valor cuota al rescatar</label><input type="number" step="any" id="rescateValorCuota-${inv.id}" placeholder="${fmtCuota(c.valorCuotaActual)}"></div>
+          </div>
+          <div class="field-row">
+            <div><label>Cuotas a rescatar</label><input type="number" step="any" id="rescateCuotas-${inv.id}" placeholder="ej: ${fmtCuota(c.cuotas)} = todo"></div>
+            <div><label>o monto a recibir</label><input type="number" id="rescateMonto-${inv.id}" placeholder="auto"></div>
+          </div>
+          <p style="font-size:11px;color:var(--text-muted);margin:-4px 0 0;">Completa valor cuota + cuotas a rescatar, o valor cuota + monto — el que falte se calcula solo.</p>
+          ${isUSD ? `<div><label>Tipo de cambio de este rescate (vacío = usa el actual, ${data.fxRate})</label><input type="number" step="any" id="rescateFx-${inv.id}" placeholder="${data.fxRate}"></div>` : ''}
+          <div class="form-actions">
+            <button type="button" class="small-btn" data-action="cancelrescate" data-id="${inv.id}">Cancelar</button>
+            <button type="button" class="add-btn" data-action="saverescate" data-id="${inv.id}">Guardar rescate</button>
+          </div>
+        </form>
         <form class="inline-form" id="editFundForm-${inv.id}">
           <div class="field-row">
             <div><label>Nombre del fondo</label><input type="text" id="editFundNombre-${inv.id}" value="${escapeHtml(inv.nombre)}"></div>
@@ -1043,6 +1088,41 @@ document.getElementById('invList').addEventListener('click', (e)=>{
     inv.historial.push(entry);
     inv.historial.sort((a,b)=>a.fecha.localeCompare(b.fecha));
     save(); renderAll();
+  } else if(action==='addrescate'){
+    document.getElementById('rescateForm-'+id).classList.add('open');
+  } else if(action==='cancelrescate'){
+    document.getElementById('rescateForm-'+id).classList.remove('open');
+  } else if(action==='saverescate'){
+    const inv = data.investments.find(i=>i.id===id);
+    const fecha = document.getElementById('rescateFecha-'+id).value || todayStr();
+    const resolved = resolveRescate(
+      document.getElementById('rescateMonto-'+id).value,
+      document.getElementById('rescateValorCuota-'+id).value,
+      document.getElementById('rescateCuotas-'+id).value
+    );
+    if(!resolved){ alert('Ingresa al menos el valor cuota, y las cuotas a rescatar o el monto a recibir.'); return; }
+    const before = computeInv(inv);
+    if(resolved.cuotas > before.cuotas + 0.0001){
+      if(!confirm(`Estás rescatando ${fmtCuota(resolved.cuotas)} cuotas pero solo tienes ${fmtCuota(before.cuotas)}. ¿Continuar de todos modos?`)) return;
+    }
+    const costoBasePorCuota = before.cuotas>0 ? before.aportesNative/before.cuotas : 0;
+    const costoBase = resolved.cuotas * costoBasePorCuota;
+    const gananciaRealizada = resolved.monto - costoBase;
+    const entry = {
+      fecha, mid:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,7),
+      tipo:'rescate', valorCuota: resolved.valorCuota,
+      cuotas: -resolved.cuotas, monto: -costoBase,
+      montoRescatado: resolved.monto, gananciaRealizada
+    };
+    if(inv.moneda==='USD'){
+      const fxInput = document.getElementById('rescateFx-'+id);
+      const fx = fxInput ? parseFloat(fxInput.value) : NaN;
+      entry.fxRate = fx>0 ? fx : data.fxRate;
+    }
+    inv.historial.push(entry);
+    inv.historial.sort((a,b)=>a.fecha.localeCompare(b.fecha));
+    save(); renderAll();
+    alert(`Rescate registrado: ${montoSymFor(inv)}${Math.round(resolved.monto).toLocaleString('es-CL')} recibidos, ganancia/pérdida realizada de ${montoSymFor(inv)}${Math.round(gananciaRealizada).toLocaleString('es-CL')}.`);
   } else if(action==='delete'){
     if(confirm('¿Eliminar esta inversión?')){
       data.investments = data.investments.filter(i=>i.id!==id);
