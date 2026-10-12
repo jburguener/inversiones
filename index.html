@@ -147,8 +147,10 @@
     <div class="kpi-grid">
       <div class="kpi-card"><p class="k">Aportado (equiv. CLP)</p><p class="v" id="kpiAportado">$0</p></div>
       <div class="kpi-card"><p class="k">Valor actual (equiv. CLP)</p><p class="v" id="kpiValor">$0</p></div>
-      <div class="kpi-card"><p class="k">Ganancia</p><p class="v" id="kpiGanancia">$0</p></div>
+      <div class="kpi-card"><p class="k">Ganancia no realizada</p><p class="v" id="kpiGanancia">$0</p></div>
       <div class="kpi-card"><p class="k">Rentabilidad acumulada</p><p class="v" id="kpiPct">0%</p></div>
+      <div class="kpi-card"><p class="k">Ganancia realizada (rescates)</p><p class="v" id="kpiRealizada">$0</p></div>
+      <div class="kpi-card"><p class="k">Ganancia total</p><p class="v" id="kpiTotal">$0</p></div>
     </div>
 
     <div class="section">
@@ -203,6 +205,7 @@
       </div>
       <p style="font-size:11px;color:var(--text-muted);margin:-4px 0 0;">Completa valor cuota + monto, o valor cuota + cuotas — el tercero se calcula solo.</p>
       <div id="newFxWrap" style="display:none;"><label>Tipo de cambio al momento de invertir</label><input type="number" step="any" id="newFxRate" placeholder="950"></div>
+      <div><label>Nota (opcional)</label><input type="text" id="newNota" placeholder="Ej: bono, venta de auto" style="font-family:var(--font-body);"></div>
       <div class="form-actions">
         <button type="button" class="small-btn" id="btnCancelAddInv">Cancelar</button>
         <button type="button" class="add-btn" id="btnSaveInv">Guardar</button>
@@ -223,6 +226,7 @@
         <button type="button" class="small-btn" id="btnFechaFinMesAnterior">Fin de mes anterior</button>
         <button type="button" class="small-btn" id="btnFechaFinMesActual">Fin de este mes</button>
       </div>
+      <div id="staleAlert"></div>
       <div id="weeklyList"></div>
       <div class="form-actions" style="margin-top:12px;padding-bottom:8px;">
         <button class="add-btn" id="btnSaveWeekly">Guardar actualización</button>
@@ -489,6 +493,7 @@ function groupInvestmentsByFondo(){
 }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 function escapeHtml(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function escapeAttr(s){ return escapeHtml(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function toCLP(amount, moneda){ return moneda==='USD' ? amount*data.fxRate : amount; }
 function montoSymFor(inv){ return inv.moneda==='USD' ? 'US$' : '$'; }
 
@@ -507,17 +512,25 @@ function resolveRescate(montoRaw, valorCuotaRaw, cuotasRaw){
 }
 
 function computeInv(inv){
-  let cuotas=0, aportesNative=0, aportesCLP=0, gananciaRealizadaNative=0;
+  let cuotas=0, aportesNative=0, aportesCLP=0, gananciaRealizadaNative=0, gananciaRealizadaCLP=0;
   inv.historial.forEach(h=>{
     cuotas += h.cuotas;
-    aportesNative += h.monto;
-    if(inv.moneda==='USD'){
-      const rate = h.fxRate || data.fxRate;
-      aportesCLP += h.monto * rate;
+    if(h.tipo==='rescate'){
+      // El costo que sale del fondo se descuenta al costo promedio en CLP (no al tipo de cambio del rescate)
+      const costoNative = -h.monto;
+      const costoCLP = aportesNative>0 ? costoNative * (aportesCLP/aportesNative) : 0;
+      aportesNative -= costoNative;
+      aportesCLP -= costoCLP;
+      gananciaRealizadaNative += (h.gananciaRealizada||0);
+      if(inv.moneda==='USD'){
+        gananciaRealizadaCLP += (h.montoRescatado||0) * (h.fxRate || data.fxRate) - costoCLP;
+      } else {
+        gananciaRealizadaCLP += (h.gananciaRealizada||0);
+      }
     } else {
-      aportesCLP += h.monto;
+      aportesNative += h.monto;
+      aportesCLP += inv.moneda==='USD' ? h.monto * (h.fxRate || data.fxRate) : h.monto;
     }
-    if(h.tipo==='rescate'){ gananciaRealizadaNative += (h.gananciaRealizada||0); }
   });
   const last = inv.historial[inv.historial.length-1];
   const valorCuotaActual = last ? last.valorCuota : 0;
@@ -527,7 +540,7 @@ function computeInv(inv){
   const gananciaCLP = valorActualCLP - aportesCLP;
   const gananciaPctNative = aportesNative>0 ? gananciaNative/aportesNative*100 : 0;
   const gananciaPctCLP = aportesCLP>0 ? gananciaCLP/aportesCLP*100 : 0;
-  return { cuotas, valorCuotaActual, gananciaRealizadaNative,
+  return { cuotas, valorCuotaActual, gananciaRealizadaNative, gananciaRealizadaCLP,
     aportesNative, valorActualNative, gananciaNative, gananciaPctNative,
     aportesCLP, valorActualCLP, gananciaCLP, gananciaPctCLP };
 }
@@ -546,6 +559,20 @@ function computeTotals(filterMoneda){
   const ganancia = actual-aportado;
   const pct = aportado>0 ? ganancia/aportado*100 : 0;
   return {aportado, actual, ganancia, pct};
+}
+
+function realizedOf(inv, filterMoneda){
+  const c = computeInv(inv);
+  return filterMoneda==='todas' ? c.gananciaRealizadaCLP : c.gananciaRealizadaNative;
+}
+function computeRealizedTotal(filterMoneda){
+  filterMoneda = filterMoneda || dashboardFilter;
+  let total = 0;
+  data.investments.forEach(inv=>{
+    if(filterMoneda!=='todas' && inv.moneda!==filterMoneda) return;
+    total += realizedOf(inv, filterMoneda);
+  });
+  return total;
 }
 
 function groupBy(keyFn, filterMoneda){
@@ -598,6 +625,12 @@ function renderDashboard(){
   gEl.textContent = fmtByFilter(totals.ganancia); gEl.className='v '+(totals.ganancia>=0?'pos':'neg');
   const pEl = document.getElementById('kpiPct');
   pEl.textContent = fmtPct(totals.pct); pEl.className='v '+(totals.pct>=0?'pos':'neg');
+  const realizada = computeRealizedTotal();
+  const rEl = document.getElementById('kpiRealizada');
+  rEl.textContent = fmtByFilter(realizada); rEl.className='v '+(realizada>=0?'pos':'neg');
+  const totalGan = totals.ganancia + realizada;
+  const tEl = document.getElementById('kpiTotal');
+  tEl.textContent = fmtByFilter(totalGan); tEl.className='v '+(totalGan>=0?'pos':'neg');
 
   // Por aportante / lugar: aportado + rentabilidad apilados
   function stackedChart(canvasId, groups){
@@ -656,31 +689,34 @@ function renderAportanteDetail(){
   });
   const entries = Object.keys(groups).map(name=>{
     const invs = groups[name];
-    let aportado=0, actual=0;
+    let aportado=0, actual=0, realizada=0;
     invs.forEach(inv=>{
       const c = computeInv(inv);
       if(dashboardFilter==='todas'){ aportado+=c.aportesCLP; actual+=c.valorActualCLP; }
       else { aportado+=c.aportesNative; actual+=c.valorActualNative; }
+      realizada += realizedOf(inv, dashboardFilter);
     });
     const ganancia = actual-aportado;
     const pct = aportado>0 ? ganancia/aportado*100 : 0;
-    return {name, invs, actual, ganancia, pct};
+    return {name, invs, actual, ganancia, pct, realizada};
   });
   entries.sort((a,b)=>b.pct-a.pct);
   if(entries.length===0){ container.innerHTML=''; return; }
-  container.innerHTML = entries.map(({name, invs, actual, ganancia, pct})=>{
+  container.innerHTML = entries.map(({name, invs, actual, ganancia, pct, realizada})=>{
     const isOpen = openAportante===name;
     const invRows = invs.map(inv=>{
       const c = computeInv(inv);
       const val = dashboardFilter==='todas' ? c.valorActualCLP : c.valorActualNative;
       const gan = dashboardFilter==='todas' ? c.gananciaCLP : c.gananciaNative;
       const pctInv = dashboardFilter==='todas' ? c.gananciaPctCLP : c.gananciaPctNative;
-      return {inv, val, gan, pctInv};
-    }).sort((a,b)=>b.pctInv-a.pctInv).map(({inv,val,gan,pctInv})=>`
+      const real = realizedOf(inv, dashboardFilter);
+      return {inv, val, gan, pctInv, real};
+    }).sort((a,b)=>b.pctInv-a.pctInv).map(({inv,val,gan,pctInv,real})=>`
       <div class="rank-row">
         <p class="name">${escapeHtml(inv.nombre)} <span style="color:var(--text-muted);">· ${escapeHtml(inv.lugar)} · ${inv.moneda}</span></p>
         <p class="nums">${fmtByFilter(val)}</p>
         <p class="nums ${gan>=0?'pos':'neg'}">${fmtByFilter(gan)} · ${fmtPct(pctInv)}</p>
+        ${real!==0 ? `<p class="nums ${real>=0?'pos':'neg'}" style="font-size:11px;">Realizada: ${fmtByFilter(real)}</p>` : ''}
       </div>`).join('');
     return `
     <div class="inv-card">
@@ -692,6 +728,7 @@ function renderAportanteDetail(){
         <div class="inv-value">
           <p class="v">${fmtByFilter(actual)}</p>
           <p class="g ${ganancia>=0?'pos':'neg'}">${fmtByFilter(ganancia)} · ${fmtPct(pct)}</p>
+          ${realizada!==0 ? `<p class="g ${realizada>=0?'pos':'neg'}" style="font-size:11px;">Realizada: ${fmtByFilter(realizada)}</p>` : ''}
         </div>
       </div>
       <div class="inv-detail ${isOpen?'open':''}">${invRows}</div>
@@ -811,6 +848,7 @@ function renderInvList(){
             <button class="small-btn danger" style="padding:2px 6px;font-size:11px;" data-action="deletemov" data-id="${inv.id}" data-mid="${h.mid}">🗑</button>
           </span>
         </div>
+        ${h.nota ? `<p style="font-size:11px;color:var(--text-muted);margin:0 0 4px;font-style:italic;">📝 ${escapeHtml(h.nota)}</p>` : ''}
         ${esRescate ? '' : `
         <form class="inline-form" id="editMovForm-${h.mid}">
           <div class="field-row">
@@ -822,6 +860,7 @@ function renderInvList(){
             <div><label>Cuotas</label><input type="number" step="any" id="editMovCuotas-${h.mid}" value="${h.cuotas}"></div>
           </div>
           ${isUSD ? `<div><label>Tipo de cambio</label><input type="number" step="any" id="editMovFx-${h.mid}" value="${h.fxRate||data.fxRate}"></div>` : ''}
+          <div><label>Nota (opcional)</label><input type="text" id="editMovNota-${h.mid}" value="${escapeAttr(h.nota||'')}" style="font-family:var(--font-body);"></div>
           <div class="form-actions">
             <button type="button" class="small-btn" data-action="canceleditmov" data-mid="${h.mid}">Cancelar</button>
             <button type="button" class="add-btn" data-action="saveeditmov" data-id="${inv.id}" data-mid="${h.mid}">Guardar cambios</button>
@@ -866,6 +905,7 @@ function renderInvList(){
           </div>
           <p style="font-size:11px;color:var(--text-muted);margin:-4px 0 0;">Completa valor cuota + cuotas a rescatar, o valor cuota + monto — el que falte se calcula solo.</p>
           ${isUSD ? `<div><label>Tipo de cambio de este rescate (vacío = usa el actual, ${data.fxRate})</label><input type="number" step="any" id="rescateFx-${inv.id}" placeholder="${data.fxRate}"></div>` : ''}
+          <div><label>Nota (opcional)</label><input type="text" id="rescateNota-${inv.id}" placeholder="Ej: para pie de departamento" style="font-family:var(--font-body);"></div>
           <div class="form-actions">
             <button type="button" class="small-btn" data-action="cancelrescate" data-id="${inv.id}">Cancelar</button>
             <button type="button" class="add-btn" data-action="saverescate" data-id="${inv.id}">Guardar rescate</button>
@@ -896,6 +936,7 @@ function renderInvList(){
           </div>
           <p style="font-size:11px;color:var(--text-muted);margin:-4px 0 0;">Completa valor cuota + monto, o valor cuota + cuotas — el tercero se calcula solo.</p>
           ${isUSD ? `<div><label>Tipo de cambio de este aporte (vacío = usa el actual, ${data.fxRate})</label><input type="number" step="any" id="movFx-${inv.id}" placeholder="${data.fxRate}"></div>` : ''}
+          <div><label>Nota (opcional)</label><input type="text" id="movNota-${inv.id}" placeholder="Ej: bono de diciembre" style="font-family:var(--font-body);"></div>
           <div class="form-actions">
             <button type="button" class="small-btn" data-action="cancelmov" data-id="${inv.id}">Cancelar</button>
             <button type="button" class="add-btn" data-action="savemov" data-id="${inv.id}">Guardar</button>
@@ -907,17 +948,53 @@ function renderInvList(){
   }).join('');
 }
 
+const STALE_DAYS = 14;
+
+function daysSince(dateStr){
+  const a = new Date(dateStr+'T00:00:00');
+  const b = new Date(todayStr()+'T00:00:00');
+  return Math.round((b-a)/86400000);
+}
+
+// Para cada fondo (agrupado por nombre) con cuotas vigentes, días desde su último movimiento o valor cuota
+function staleInfo(groups){
+  const info = {};
+  groups.forEach(g=>{
+    const cuotasVigentes = g.items.reduce((s,inv)=>s+computeInv(inv).cuotas, 0);
+    if(cuotasVigentes <= 0.0001) return; // fondo ya rescatado por completo
+    let last = null;
+    g.items.forEach(inv=>inv.historial.forEach(h=>{ if(!last || h.fecha>last) last = h.fecha; }));
+    if(!last) return;
+    const dias = daysSince(last);
+    if(dias >= STALE_DAYS) info[groupKey(g.nombre)] = {dias, last, nombre:g.nombre};
+  });
+  return info;
+}
+
 function renderWeekly(){
   const fechaInput = document.getElementById('weeklyFecha');
   if(!fechaInput.value) fechaInput.value = todayStr();
   const list = document.getElementById('weeklyList');
+  const alertEl = document.getElementById('staleAlert');
+  const tabBtn = document.querySelector('.tab-btn[data-tab="actualizar"]');
   if(data.investments.length===0){
     list.innerHTML = `<div class="empty"><strong>Aún no hay inversiones</strong>Agrega tus fondos primero en la pestaña Inversiones.</div>`;
+    alertEl.innerHTML = '';
+    if(tabBtn) tabBtn.textContent = 'Actualizar';
     return;
   }
   const groups = groupInvestmentsByFondo();
+  const stale = staleInfo(groups);
+  const staleList = Object.values(stale).sort((a,b)=>b.dias-a.dias);
+  if(tabBtn) tabBtn.textContent = staleList.length ? 'Actualizar •' : 'Actualizar';
+  alertEl.innerHTML = staleList.length ? `
+    <div style="background:rgba(193,85,59,.12);border:1px solid rgba(193,85,59,.45);border-radius:10px;padding:12px 14px;margin-bottom:14px;">
+      <p style="margin:0 0 6px;font-size:13px;font-weight:600;color:var(--rust);">${staleList.length} fondo${staleList.length>1?'s':''} sin actualizar hace ${STALE_DAYS}+ días</p>
+      ${staleList.map(s=>`<p style="margin:2px 0;font-size:12px;font-family:var(--font-mono);">${escapeHtml(s.nombre)} · hace ${s.dias} días (${s.last})</p>`).join('')}
+    </div>` : '';
   list.innerHTML = groups.map(g=>{
     const gkey = groupKey(g.nombre);
+    const staleTag = stale[gkey] ? `<span class="tag" style="margin-left:6px;color:var(--rust);">hace ${stale[gkey].dias} días</span>` : '';
     const itemRows = g.items.map(inv=>{
       const c = computeInv(inv);
       const isUSD = inv.moneda==='USD';
@@ -932,7 +1009,7 @@ function renderWeekly(){
     }).join('');
     return `
     <div class="detail-cell" style="margin-bottom:16px;padding-bottom:14px;border-bottom:1px dashed var(--border);">
-      <p class="tag" style="display:inline-block;margin-bottom:8px;">${escapeHtml(g.nombre)}</p>
+      <p class="tag" style="display:inline-block;margin-bottom:8px;">${escapeHtml(g.nombre)}</p>${staleTag}
       <label>Valor cuota nuevo ${g.items.length>1 ? `(se aplica a las ${g.items.length} inversiones de este fondo)` : ''}</label>
       <input type="number" step="any" id="weeklyVC-${gkey}" placeholder="valor cuota" style="margin-bottom:8px;">
       ${itemRows}
@@ -1047,13 +1124,15 @@ document.getElementById('btnSaveInv').addEventListener('click', ()=>{
   );
   if(!nombre || !resolved || resolved.monto<=0){ alert('Completa el nombre, el valor cuota, y el monto o las cuotas.'); return; }
   const entry = { fecha, mid:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,7), ...resolved };
+  const notaNueva = document.getElementById('newNota').value.trim();
+  if(notaNueva) entry.nota = notaNueva;
   if(moneda==='USD'){
     const fx = parseFloat(document.getElementById('newFxRate').value);
     entry.fxRate = fx>0 ? fx : data.fxRate;
   }
   data.investments.push({ id:uid(), nombre, aportante, lugar, moneda, historial:[entry] });
   save();
-  ['newNombre','newMonto','newValorCuota','newCuotas','newFxRate'].forEach(id=>document.getElementById(id).value='');
+  ['newNombre','newMonto','newValorCuota','newCuotas','newFxRate','newNota'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('formAddInv').classList.remove('open');
   renderAll();
 });
@@ -1080,6 +1159,8 @@ document.getElementById('invList').addEventListener('click', (e)=>{
     );
     if(!resolved){ alert('Ingresa al menos el valor cuota, y el monto o la cantidad de cuotas.'); return; }
     const entry = {fecha, mid:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,7), ...resolved};
+    const notaMov = document.getElementById('movNota-'+id).value.trim();
+    if(notaMov) entry.nota = notaMov;
     if(inv.moneda==='USD'){
       const fxInput = document.getElementById('movFx-'+id);
       const fx = fxInput ? parseFloat(fxInput.value) : NaN;
@@ -1114,6 +1195,8 @@ document.getElementById('invList').addEventListener('click', (e)=>{
       cuotas: -resolved.cuotas, monto: -costoBase,
       montoRescatado: resolved.monto, gananciaRealizada
     };
+    const notaResc = document.getElementById('rescateNota-'+id).value.trim();
+    if(notaResc) entry.nota = notaResc;
     if(inv.moneda==='USD'){
       const fxInput = document.getElementById('rescateFx-'+id);
       const fx = fxInput ? parseFloat(fxInput.value) : NaN;
@@ -1162,6 +1245,8 @@ document.getElementById('invList').addEventListener('click', (e)=>{
     );
     if(!resolved){ alert('Datos inválidos: revisa valor cuota, monto y cuotas.'); return; }
     h.fecha = fecha; h.monto = resolved.monto; h.valorCuota = resolved.valorCuota; h.cuotas = resolved.cuotas;
+    const notaEdit = document.getElementById('editMovNota-'+mid).value.trim();
+    if(notaEdit) h.nota = notaEdit; else delete h.nota;
     if(inv.moneda==='USD'){
       const fxInput = document.getElementById('editMovFx-'+mid);
       const fx = fxInput ? parseFloat(fxInput.value) : NaN;
