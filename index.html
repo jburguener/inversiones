@@ -104,6 +104,14 @@
   table.mini th,table.mini td{text-align:left;padding:6px 4px;border-bottom:1px solid var(--border);}
   table.mini th{color:var(--text-muted);font-weight:500;font-size:10px;text-transform:uppercase;}
 
+  .fund-table-wrap{overflow-x:auto;margin:0 -10px 8px;padding:0 4px;}
+  table.fund-table{width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:11px;}
+  table.fund-table th,table.fund-table td{padding:8px 4px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap;vertical-align:top;}
+  table.fund-table th:first-child,table.fund-table td:first-child{text-align:left;white-space:normal;min-width:76px;font-family:var(--font-body);font-size:12px;}
+  table.fund-table th{color:var(--text-muted);font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:.02em;white-space:normal;}
+  table.fund-table td .sub{display:block;font-size:10px;color:var(--text-muted);margin-top:2px;white-space:normal;}
+  table.fund-table tfoot td{font-weight:600;border-top:2px solid var(--border);border-bottom:none;}
+
   footer.settings{text-align:center;margin-top:20px;font-size:11px;color:var(--text-muted);}
   footer.settings button{background:none;border:none;color:var(--text-muted);text-decoration:underline;cursor:pointer;font-size:12px;padding:0;}
 
@@ -151,6 +159,11 @@
       <div class="kpi-card"><p class="k">Rentabilidad acumulada</p><p class="v" id="kpiPct">0%</p></div>
       <div class="kpi-card"><p class="k">Ganancia realizada (rescates)</p><p class="v" id="kpiRealizada">$0</p></div>
       <div class="kpi-card"><p class="k">Ganancia total</p><p class="v" id="kpiTotal">$0</p></div>
+    </div>
+
+    <div class="section">
+      <h2>Consolidado por fondo</h2>
+      <div class="fund-table-wrap" id="fundTableWrap"></div>
     </div>
 
     <div class="section">
@@ -649,6 +662,7 @@ function renderDashboard(){
   renderAportanteDetail();
   stackedChart('chartLugar', groupBy(inv=>inv.lugar));
 
+  renderFondoTable();
   renderFondoRanking();
 }
 
@@ -734,6 +748,58 @@ function renderAportanteDetail(){
       <div class="inv-detail ${isOpen?'open':''}">${invRows}</div>
     </div>`;
   }).join('');
+}
+
+// Una fila por fondo (mismo nombre), sumando todas sus inversiones (aportantes y lugares distintos)
+function renderFondoTable(){
+  const wrap = document.getElementById('fundTableWrap');
+  if(!wrap) return;
+  const rows = [];
+  groupInvestmentsByFondo().forEach(g=>{
+    let aportado=0, actual=0, realizada=0, n=0;
+    g.items.forEach(inv=>{
+      if(dashboardFilter!=='todas' && inv.moneda!==dashboardFilter) return;
+      const c = computeInv(inv);
+      n++;
+      if(dashboardFilter==='todas'){ aportado+=c.aportesCLP; actual+=c.valorActualCLP; }
+      else { aportado+=c.aportesNative; actual+=c.valorActualNative; }
+      realizada += realizedOf(inv, dashboardFilter);
+    });
+    if(n===0) return;
+    if(Math.abs(aportado)<0.5 && Math.abs(actual)<0.5 && Math.abs(realizada)<0.5) return;
+    rows.push({nombre:g.nombre, n, aportado, actual, realizada, ganancia:actual-aportado,
+      pct: aportado>0 ? (actual-aportado)/aportado*100 : null});
+  });
+  if(rows.length===0){
+    wrap.innerHTML = '<p style="font-size:12px;color:var(--text-muted);">Sin inversiones para mostrar.</p>';
+    return;
+  }
+  rows.sort((a,b)=>b.actual-a.actual);
+  const tot = rows.reduce((t,r)=>({aportado:t.aportado+r.aportado, actual:t.actual+r.actual, realizada:t.realizada+r.realizada}),
+    {aportado:0, actual:0, realizada:0});
+  const totGan = tot.actual - tot.aportado;
+  const totPct = tot.aportado>0 ? totGan/tot.aportado*100 : null;
+  const cls = v => v>=0 ? 'pos' : 'neg';
+  const pctTxt = p => p===null ? '—' : fmtPct(p);
+  const realSub = r => Math.abs(r)>=0.5 ? `<span class="sub ${cls(r)}">Realizada: ${fmtByFilter(r)}</span>` : '';
+  wrap.innerHTML = `
+    <table class="fund-table">
+      <thead><tr><th>Fondo</th><th>Aportado</th><th>Monto actual</th><th>Rentabilidad</th></tr></thead>
+      <tbody>${rows.map(r=>`
+        <tr>
+          <td>${escapeHtml(r.nombre)}<span class="sub">${r.n>1 ? r.n+' inversiones' : '1 inversión'}</span></td>
+          <td>${fmtByFilter(r.aportado)}</td>
+          <td>${fmtByFilter(r.actual)}</td>
+          <td class="${cls(r.ganancia)}">${fmtByFilter(r.ganancia)}<span class="sub ${cls(r.ganancia)}">${pctTxt(r.pct)}</span>${realSub(r.realizada)}</td>
+        </tr>`).join('')}
+      </tbody>
+      <tfoot><tr>
+        <td>Total</td>
+        <td>${fmtByFilter(tot.aportado)}</td>
+        <td>${fmtByFilter(tot.actual)}</td>
+        <td class="${cls(totGan)}">${fmtByFilter(totGan)}<span class="sub ${cls(totGan)}">${pctTxt(totPct)}</span>${realSub(tot.realizada)}</td>
+      </tr></tfoot>
+    </table>`;
 }
 
 function renderFondoRanking(){
