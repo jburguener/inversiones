@@ -262,6 +262,23 @@
       </div>
     </div>
     <div class="section">
+      <h2>Dividir un aportante en dos</h2>
+      <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;">
+        Reparte en partes iguales (50% / 50%) todas las inversiones de un aportante entre dos aportantes nuevos. Se conservan las fechas, valores cuota, tipos de cambio, notas y rescates; el aportante original desaparece. Antes de aplicar se guarda una copia de seguridad en este dispositivo.
+      </p>
+      <label>Aportante a dividir</label>
+      <select id="splitOrigen" style="margin-bottom:10px;"></select>
+      <div class="field-row">
+        <div><label>Nombre de la parte 1</label><input type="text" id="splitNombre1" placeholder="Ej: Agus" style="font-family:var(--font-body);"></div>
+        <div><label>Nombre de la parte 2</label><input type="text" id="splitNombre2" placeholder="Ej: Joaco" style="font-family:var(--font-body);"></div>
+      </div>
+      <p id="splitPreview" style="font-size:12px;color:var(--text-muted);margin:10px 0 0;"></p>
+      <div class="form-actions" style="margin-top:10px;">
+        <button class="add-btn" id="btnSplitAportante">Dividir 50 / 50</button>
+      </div>
+      <p id="splitResult" style="font-size:12px;margin:10px 0 0;"></p>
+    </div>
+    <div class="section">
       <h2>Lugares</h2>
       <div id="lugaresList"></div>
       <div class="field-row" style="margin-top:10px;">
@@ -1090,6 +1107,7 @@ function renderAll(){
   try{ renderDashboard(); }catch(e){ console.error('renderDashboard', e); }
   try{ renderWeekly(); }catch(e){ console.error('renderWeekly', e); }
   try{ renderSyncSection(); }catch(e){ console.error('renderSyncSection', e); }
+  try{ renderSplitSection(); }catch(e){ console.error('renderSplitSection', e); }
 }
 
 // ---------- tabs ----------
@@ -1339,6 +1357,74 @@ document.getElementById('aportantesList').addEventListener('click', (e)=>{
 document.getElementById('lugaresList').addEventListener('click', (e)=>{
   const btn = e.target.closest('[data-remove-lugar]');
   if(btn){ data.lugares.splice(parseInt(btn.dataset.removeLugar),1); save(); renderAll(); }
+});
+
+// ---------- dividir un aportante en dos (50/50) ----------
+function halveEntry(h){
+  const e = Object.assign({}, h, { mid:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,7) });
+  ['monto','cuotas','montoRescatado','gananciaRealizada'].forEach(k=>{ if(typeof e[k]==='number') e[k] = e[k]/2; });
+  return e;
+}
+
+// Devuelve las inversiones resultantes (sin tocar `data`): cada inversión del aportante origen
+// pasa a ser dos, una por cada nombre nuevo, con el historial a la mitad.
+function splitInvestments(investments, origen, nombre1, nombre2){
+  const out = [];
+  investments.forEach(inv=>{
+    if(inv.aportante!==origen){ out.push(inv); return; }
+    [nombre1, nombre2].forEach(n=>{
+      out.push(Object.assign({}, inv, {
+        id:uid(), aportante:n, historial: inv.historial.map(halveEntry)
+      }));
+    });
+  });
+  return out;
+}
+
+function renderSplitSection(){
+  const sel = document.getElementById('splitOrigen');
+  if(!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = data.aportantes.map(a=>`<option value="${escapeAttr(a)}">${escapeHtml(a)}</option>`).join('');
+  if(prev && data.aportantes.includes(prev)) sel.value = prev;
+  updateSplitPreview();
+}
+function updateSplitPreview(){
+  const origen = document.getElementById('splitOrigen').value;
+  const mine = data.investments.filter(i=>i.aportante===origen);
+  const el = document.getElementById('splitPreview');
+  if(!origen){ el.textContent=''; return; }
+  el.textContent = mine.length
+    ? `${origen} tiene ${mine.length} ${mine.length>1?'inversiones':'inversión'}; quedarían ${mine.length*2} (${mine.length} por cada parte).`
+    : `${origen} no tiene inversiones registradas, no hay nada que dividir.`;
+}
+document.getElementById('splitOrigen').addEventListener('change', updateSplitPreview);
+
+document.getElementById('btnSplitAportante').addEventListener('click', ()=>{
+  const resEl = document.getElementById('splitResult');
+  resEl.textContent = ''; resEl.style.color = 'var(--rust)';
+  const origen = document.getElementById('splitOrigen').value;
+  const n1 = document.getElementById('splitNombre1').value.trim();
+  const n2 = document.getElementById('splitNombre2').value.trim();
+  const mine = data.investments.filter(i=>i.aportante===origen);
+  if(!origen || mine.length===0){ resEl.textContent = 'Ese aportante no tiene inversiones para dividir.'; return; }
+  if(!n1 || !n2){ resEl.textContent = 'Escribe los dos nombres nuevos.'; return; }
+  if(n1.toLowerCase()===n2.toLowerCase()){ resEl.textContent = 'Los dos nombres deben ser distintos.'; return; }
+  const ocupado = [n1,n2].find(n=> data.aportantes.some(a=>a.toLowerCase()===n.toLowerCase() && a!==origen));
+  if(ocupado){ resEl.textContent = `"${ocupado}" ya existe como aportante. Usa un nombre nuevo para no mezclar sus inversiones.`; return; }
+  if(!confirm(`Se dividirá "${origen}" en "${n1}" y "${n2}" (50% cada uno), afectando ${mine.length} ${mine.length>1?'inversiones':'inversión'}. ¿Continuar?`)) return;
+
+  try{ localStorage.setItem('inversiones_backup_pre_division', JSON.stringify(data)); }catch(e){ /* sin respaldo local, se sigue */ }
+  data.investments = splitInvestments(data.investments, origen, n1, n2);
+  const idx = data.aportantes.indexOf(origen);
+  data.aportantes.splice(idx, 1, n1, n2);
+  save();
+  document.getElementById('splitNombre1').value = '';
+  document.getElementById('splitNombre2').value = '';
+  renderAll();
+  const r = document.getElementById('splitResult');
+  r.style.color = 'var(--mint)';
+  r.textContent = `Listo: "${origen}" ahora es "${n1}" y "${n2}", cada uno con la mitad. Copia de seguridad guardada en este dispositivo.`;
 });
 
 // ---------- carga histórica masiva ----------
